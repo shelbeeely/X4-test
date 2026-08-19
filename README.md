@@ -10,21 +10,29 @@ BUSY pin state and refresh timing.
 Everything builds in GitHub Actions — no local toolchain needed. Flash and
 monitor from Chrome over WebSerial.
 
-## Flashing from the GitHub Pages site (easiest)
+## Flashing and monitoring from the GitHub Pages site (easiest)
 
-Every push builds the firmware and deploys a one-click flashing page to
-**https://shelbeeely.github.io/X4-test/** (via
-[ESP Web Tools](https://esphome.github.io/esp-web-tools/), the same widget
-behind ESPHome Web). On a Chromebook or any Chrome/Edge browser:
+Every push builds the firmware and deploys a page to
+**https://shelbeeely.github.io/X4-test/** with two independent tools, both
+over WebSerial, no drivers or command line:
+
+- **Flash** — a one-click install button (via
+  [ESP Web Tools](https://esphome.github.io/esp-web-tools/), the same widget
+  behind ESPHome Web) that always flashes whatever the latest successful
+  build produced. Nothing to download or unzip.
+- **Serial monitor** — a live 115200-baud console built directly into the
+  page (plain Web Serial API, independent of the flash button), so you can
+  watch the debug output without any separate app.
+
+On a Chromebook or any Chrome/Edge browser:
 
 1. Plug the X4 in over USB.
 2. Open the Pages URL above.
-3. Click **Connect & Flash**, pick the serial port, and confirm.
-4. Once it's done, use the same dialog's **Logs & Console** option to open a
-   115200-baud serial monitor and watch the debug output.
-
-The page always flashes whatever the latest successful build produced —
-nothing to download or unzip.
+3. Under **1. Flash**, click **Connect & Flash**, pick the serial port, and
+   confirm.
+4. Under **2. Watch the debug output**, click **Connect** (a separate port
+   request — close the flash dialog first if it's still open), then reset
+   the board to see the full boot log.
 
 > **One-time repo setup:** GitHub Pages must be enabled once before the
 > `Deploy to GitHub Pages` step in the workflow will succeed: go to

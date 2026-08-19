@@ -33,6 +33,35 @@
     padding: 0.75rem 1rem;
     border-radius: 6px;
   }
+  #monitor-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1rem 0 0.5rem;
+  }
+  #monitor-controls button {
+    font-size: 0.95rem;
+    padding: 0.5em 1.1em;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+  }
+  #monitor-controls button:disabled { color: #999; cursor: default; }
+  #connect-btn { background: #1a73e8; color: white; border-color: #1a73e8; }
+  #connect-btn:disabled { background: #eee; color: #999; border-color: #ccc; }
+  #monitor-output {
+    background: #0b0f14;
+    color: #d3f9d8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    padding: 0.9rem 1rem;
+    border-radius: 8px;
+    height: 22rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+  }
   footer { margin-top: 3rem; font-size: 0.9rem; color: #666; }
 </style>
 </head>
@@ -41,8 +70,9 @@
   <p class="sub">Display bring-up / debug build for the Xteink X4 (ESP32-C3)</p>
 
   <p>
-    Flashes the latest CI build straight from Chrome over WebSerial &mdash;
-    no drivers, no command line, nothing to install.
+    Flashes the latest CI build and lets you watch its serial debug output
+    &mdash; both straight from Chrome over WebSerial, no drivers or command
+    line needed.
   </p>
 
   <p class="note">
@@ -50,6 +80,7 @@
     X4 connected over USB. Web Serial isn't available in mobile browsers.
   </p>
 
+  <h2>1. Flash</h2>
   <esp-web-install-button manifest="firmware/manifest.json">
     <button slot="activate">Connect &amp; Flash</button>
     <span slot="unsupported">
@@ -62,15 +93,29 @@
     </span>
   </esp-web-install-button>
 
-  <h2>After flashing</h2>
+  <h2>2. Watch the debug output</h2>
   <p>
-    Reopen the install dialog and choose <strong>Logs &amp; Console</strong>
-    (or click <strong>Connect &amp; Flash</strong> again and cancel the
-    install step) to get a Web Serial terminal at 115200 baud. You'll see the
-    boot-time <code>BoardConfig</code> pin dump, display geometry, the
-    initial refresh timing, then a line every 5 seconds as the firmware
-    toggles the panel black/white, logging BUSY pin state and refresh
-    duration.
+    Opens a live 115200-baud console right in this page. Works whether you
+    just flashed above or the X4 is already running this firmware from
+    before &mdash; it's a separate WebSerial connection from the flasher, so
+    close the install dialog first if it's still open.
+  </p>
+  <div id="monitor-controls">
+    <button id="connect-btn">Connect</button>
+    <button id="disconnect-btn" disabled>Disconnect</button>
+    <button id="clear-btn">Clear</button>
+  </div>
+  <pre id="monitor-output" aria-live="polite"></pre>
+  <p id="monitor-unsupported" class="note" hidden>
+    Your browser doesn't support Web Serial &mdash; open this page in Chrome
+    or Edge instead.
+  </p>
+  <p>
+    After connecting, reset the board (or replug USB) to see the full boot
+    log from the start: the <code>BoardConfig</code> pin dump, display
+    geometry, initial refresh timing, then a line every 5 seconds as the
+    firmware toggles the panel black/white, logging BUSY pin state and
+    refresh duration.
   </p>
 
   <footer>
@@ -80,5 +125,83 @@
     for manual esptool-js / ESPHome Web flashing instructions and the
     firmware source.
   </footer>
+
+  <script>
+    (function () {
+      var connectBtn = document.getElementById('connect-btn');
+      var disconnectBtn = document.getElementById('disconnect-btn');
+      var clearBtn = document.getElementById('clear-btn');
+      var output = document.getElementById('monitor-output');
+      var unsupported = document.getElementById('monitor-unsupported');
+
+      if (!('serial' in navigator)) {
+        connectBtn.disabled = true;
+        unsupported.hidden = false;
+      }
+
+      var port = null;
+      var reader = null;
+      var keepReading = false;
+
+      function appendLine(text) {
+        output.textContent += text;
+        output.scrollTop = output.scrollHeight;
+      }
+
+      function readLoop() {
+        var decoder = new TextDecoderStream();
+        var closed = port.readable.pipeTo(decoder.writable).catch(function () {});
+        reader = decoder.readable.getReader();
+        return (function pump() {
+          return reader.read().then(function (result) {
+            if (!keepReading || result.done) return;
+            if (result.value) appendLine(result.value);
+            return pump();
+          });
+        })().catch(function (err) {
+          appendLine('\n[serial read error: ' + err.message + ']\n');
+        }).finally(function () {
+          try { reader.releaseLock(); } catch (e) {}
+          return closed;
+        });
+      }
+
+      function connect() {
+        navigator.serial.requestPort().then(function (p) {
+          port = p;
+          return port.open({ baudRate: 115200 });
+        }).then(function () {
+          keepReading = true;
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+          appendLine('--- connected ---\n');
+          port.addEventListener('disconnect', disconnect);
+          readLoop();
+        }).catch(function (err) {
+          appendLine('[connection failed: ' + err.message + ']\n');
+        });
+      }
+
+      function disconnect() {
+        keepReading = false;
+        var cancelled = reader ? reader.cancel().catch(function () {}) : Promise.resolve();
+        cancelled.then(function () {
+          return port ? port.close().catch(function () {}) : Promise.resolve();
+        }).then(function () {
+          port = null;
+          reader = null;
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+          appendLine('--- disconnected ---\n');
+        });
+      }
+
+      connectBtn.addEventListener('click', connect);
+      disconnectBtn.addEventListener('click', disconnect);
+      clearBtn.addEventListener('click', function () {
+        output.textContent = '';
+      });
+    })();
+  </script>
 </body>
 </html>
