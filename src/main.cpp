@@ -1,17 +1,22 @@
-// Xteink X4 display bring-up / debug firmware.
+// Xteink X4 display + button bring-up / debug firmware.
 //
-// No SD card, no input handling, no UI layer. Just: init the display, dump
-// BoardConfig pin assignments + geometry over serial, draw a test pattern
-// with one FULL_REFRESH, then loop toggling full black/white every 5s while
-// logging BUSY pin state and refresh timing. Monitor at 115200 baud.
+// No SD card, no UI layer. Init the display, dump BoardConfig pin
+// assignments + geometry over serial, draw a test pattern with one
+// FULL_REFRESH, then loop non-blocking: toggle full black/white every 5s
+// (logging BUSY pin state and refresh timing) while continuously polling the
+// six ADC-ladder buttons + power button, logging every press/release edge
+// plus a periodic raw-ADC heartbeat so a drifted/flaky divider is visible
+// even without a full press. Monitor at 115200 baud.
 
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
+#include <InputManager.h>
 
 using namespace BoardConfig;
 
 static EInkDisplay* display = nullptr;
+static InputManager buttons;
 
 // ---------------------------------------------------------------------------
 // Minimal direct-framebuffer drawing helpers.
@@ -128,7 +133,22 @@ static void dumpBoardConfig() {
   Serial.printf("  viewableInsets      : top=%u right=%u bottom=%u left=%u\n", p.viewableInsets.top,
                 p.viewableInsets.right, p.viewableInsets.bottom, p.viewableInsets.left);
   Serial.printf("  power.latch0        : %d\n", p.power.latch0);
+  Serial.println("  --- input pins (BoardConfig::ACTIVE.input) ---");
+  Serial.printf("    inputStyle        : %u (XteinkAdcLadder=%u)\n", static_cast<unsigned>(p.inputStyle),
+                static_cast<unsigned>(InputStyle::XteinkAdcLadder));
+  Serial.printf("    adcPin1 (Back/Confirm/Left/Right) : GPIO%d\n", InputManager::BUTTON_ADC_PIN_1);
+  Serial.printf("    adcPin2 (Up/Down)                 : GPIO%d\n", InputManager::BUTTON_ADC_PIN_2);
+  Serial.printf("    power   : GPIO%d  activeHigh=%d\n", p.input.power, p.input.powerActiveHigh);
   Serial.println("===============================================================");
+}
+
+static void logButtonSnapshot(const char* prefix) {
+  InputManager::ButtonAdcSample g1, g2;
+  buttons.readButtonAdc(g1, g2);
+  Serial.printf("[BTN] %-7s g1(GPIO%d)=%-4d->%-8s g2(GPIO%d)=%-4d->%-8s power=%s\n", prefix, g1.pin, g1.raw,
+                g1.button >= 0 ? InputManager::getButtonName(g1.button) : "none", g2.pin, g2.raw,
+                g2.button >= 0 ? InputManager::getButtonName(g2.button) : "none",
+                buttons.isPressed(InputManager::BTN_POWER) ? "PRESSED" : "released");
 }
 
 static void dumpDisplayGeometry() {
@@ -203,6 +223,8 @@ void setup() {
   display = new EInkDisplay(d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy);
   display->begin();
 
+  buttons.begin();
+
   dumpDisplayGeometry();
 
   Serial.println("Drawing test pattern (border + corner blocks + diagonal + text)...");
@@ -213,10 +235,39 @@ void setup() {
   uint32_t t1 = millis();
   Serial.printf("Initial FULL_REFRESH took %lu ms\n", static_cast<unsigned long>(t1 - t0));
 
-  Serial.println("### Setup complete — entering black/white toggle loop (5s interval) ###");
+  Serial.println("### Setup complete: black/white toggle every 5s + live button test ###");
 }
 
-void loop() {
+static void pollButtons() {
+  static uint32_t lastHeartbeatMs = 0;
+  uint32_t now = millis();
+
+  buttons.update();
+
+  bool anyEdge = false;
+  for (uint8_t i = InputManager::BTN_BACK; i <= InputManager::BTN_POWER; i++) {
+    if (buttons.wasPressed(i)) {
+      Serial.printf("[BTN] PRESS   %s\n", InputManager::getButtonName(i));
+      logButtonSnapshot("->");
+      anyEdge = true;
+    }
+    if (buttons.wasReleased(i)) {
+      Serial.printf("[BTN] RELEASE %s (held %lums)\n", InputManager::getButtonName(i),
+                    static_cast<unsigned long>(buttons.getHeldTime()));
+      logButtonSnapshot("->");
+      anyEdge = true;
+    }
+  }
+
+  // Idle heartbeat so a drifted/noisy divider is visible on the raw ADC
+  // values even when no press ever lands in a recognized band.
+  if (!anyEdge && now - lastHeartbeatMs >= 2000) {
+    logButtonSnapshot("idle");
+    lastHeartbeatMs = now;
+  }
+}
+
+static void toggleDisplay() {
   static bool black = false;
   black = !black;
 
@@ -234,6 +285,18 @@ void loop() {
 
   Serial.printf("[LOOP] BUSY pin (GPIO%d) after refresh  : %d\n", busyPin, digitalRead(busyPin));
   Serial.printf("[LOOP] Refresh duration                 : %lu ms\n", static_cast<unsigned long>(t1 - t0));
+}
 
-  delay(5000);
+void loop() {
+  static uint32_t lastToggleMs = 0;
+  uint32_t now = millis();
+
+  pollButtons();
+
+  if (now - lastToggleMs >= 5000) {
+    lastToggleMs = now;
+    toggleDisplay();
+  }
+
+  delay(10);
 }

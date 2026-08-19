@@ -62,6 +62,43 @@
     word-break: break-word;
     margin: 0;
   }
+  #ai-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    flex-wrap: wrap;
+  }
+  #ai-controls input {
+    flex: 1;
+    min-width: 12rem;
+    padding: 0.5em 0.7em;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+  }
+  #ai-controls button {
+    font-size: 0.95rem;
+    padding: 0.5em 1.1em;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+  }
+  #ai-analyze { background: #1a73e8; color: white; border-color: #1a73e8; }
+  #ai-analyze:disabled { background: #eee; color: #999; border-color: #ccc; cursor: default; }
+  #ai-status { font-size: 0.85rem; color: #666; margin: 0.4rem 0; min-height: 1.2em; }
+  #ai-output {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.9rem;
+    margin: 0;
+    min-height: 1.5rem;
+  }
   footer { margin-top: 3rem; font-size: 0.9rem; color: #666; }
 </style>
 </head>
@@ -112,11 +149,40 @@
   </p>
   <p>
     After connecting, reset the board (or replug USB) to see the full boot
-    log from the start: the <code>BoardConfig</code> pin dump, display
-    geometry, initial refresh timing, then a line every 5 seconds as the
-    firmware toggles the panel black/white, logging BUSY pin state and
-    refresh duration.
+    log from the start: the <code>BoardConfig</code> pin dump (display
+    <em>and</em> button pins), display geometry, initial refresh timing, a
+    line every 5 seconds as the firmware toggles the panel black/white
+    logging BUSY pin state and refresh duration, and a <code>[BTN]</code>
+    line every time a button is pressed/released or roughly every 2s while
+    idle &mdash; each one carries the raw ADC reading for both button groups,
+    so a drifted or flaky divider is visible even without a full press.
   </p>
+
+  <h2>3. Ask an AI about the log</h2>
+  <p>
+    Paste an <a href="https://openrouter.ai/keys">OpenRouter</a> API key to
+    send whatever's currently in the console above to an LLM for a second
+    opinion &mdash; useful for spotting hardware issues (a stuck BUSY pin,
+    odd refresh timing, button ADC readings sitting on a classification
+    boundary, missing events) that are easy to miss skimming a long log by
+    eye.
+  </p>
+  <p class="note">
+    Your key is stored only in this browser's <code>localStorage</code> and
+    sent straight to OpenRouter's API &mdash; this page is static with no
+    server of its own to see it.
+  </p>
+  <div id="ai-controls">
+    <input id="ai-key" type="password" placeholder="OpenRouter API key (sk-or-...)" autocomplete="off">
+    <button id="ai-save-key">Save key</button>
+    <button id="ai-clear-key">Clear key</button>
+  </div>
+  <div id="ai-controls">
+    <input id="ai-model" type="text" value="openai/gpt-4o-mini" placeholder="model id, e.g. openai/gpt-4o-mini">
+    <button id="ai-analyze">Analyze log with AI</button>
+  </div>
+  <div id="ai-status">Sends up to the last ~8000 characters of the console above.</div>
+  <pre id="ai-output"></pre>
 
   <footer>
     Built automatically on every push by
@@ -200,6 +266,111 @@
       disconnectBtn.addEventListener('click', disconnect);
       clearBtn.addEventListener('click', function () {
         output.textContent = '';
+      });
+    })();
+  </script>
+
+  <script>
+    (function () {
+      var STORAGE_KEY = 'xteink_x4_openrouter_key';
+      var MAX_LOG_CHARS = 8000;
+
+      var keyInput = document.getElementById('ai-key');
+      var saveKeyBtn = document.getElementById('ai-save-key');
+      var clearKeyBtn = document.getElementById('ai-clear-key');
+      var modelInput = document.getElementById('ai-model');
+      var analyzeBtn = document.getElementById('ai-analyze');
+      var statusEl = document.getElementById('ai-status');
+      var outputEl = document.getElementById('ai-output');
+
+      var savedKey = localStorage.getItem(STORAGE_KEY);
+      if (savedKey) {
+        keyInput.value = savedKey;
+        statusEl.textContent = 'Using saved key.';
+      }
+
+      saveKeyBtn.addEventListener('click', function () {
+        var key = keyInput.value.trim();
+        if (!key) { statusEl.textContent = 'Enter a key first.'; return; }
+        localStorage.setItem(STORAGE_KEY, key);
+        statusEl.textContent = 'Key saved in this browser.';
+      });
+
+      clearKeyBtn.addEventListener('click', function () {
+        localStorage.removeItem(STORAGE_KEY);
+        keyInput.value = '';
+        statusEl.textContent = 'Key cleared.';
+      });
+
+      var SYSTEM_PROMPT = [
+        'You are helping debug firmware for the Xteink X4, an ESP32-C3 board',
+        'driving an SSD1677 800x480 e-paper display via the freeink-sdk',
+        'library, plus six buttons (Back/Confirm/Left/Right/Up/Down) read as',
+        'an ADC resistor ladder on two analog pins, and a separate power',
+        'button GPIO. The serial log below is from a debug firmware that at',
+        'boot dumps the BoardConfig pin assignments (display and button) and',
+        'display geometry, draws a test pattern with one FULL_REFRESH, then',
+        'loops toggling the panel full black/white every 5 seconds while',
+        'logging the BUSY pin state and refresh duration, and separately',
+        'logs a [BTN] line on every button press/release edge plus a raw-ADC',
+        'heartbeat roughly every 2s while idle (format: g1/g2 raw ADC value',
+        '-> classified button, and power pin state). Given this log, point',
+        'out anything that looks like a hardware issue: a BUSY pin stuck',
+        'high/low, refresh timings that look abnormal, ADC readings that sit',
+        'right on a classification boundary or drift over time (suggesting a',
+        'marginal button or divider), missing expected events, or anything',
+        'else inconsistent with correct operation. Be specific and concise,',
+        'and say plainly if the log looks healthy.'
+      ].join(' ');
+
+      analyzeBtn.addEventListener('click', function () {
+        var key = localStorage.getItem(STORAGE_KEY) || keyInput.value.trim();
+        if (!key) { statusEl.textContent = 'Save an OpenRouter API key first.'; return; }
+
+        var log = document.getElementById('monitor-output').textContent.trim();
+        if (!log) { statusEl.textContent = 'No log output yet — connect the serial monitor above first.'; return; }
+        if (log.length > MAX_LOG_CHARS) log = log.slice(-MAX_LOG_CHARS);
+
+        var model = modelInput.value.trim() || 'openai/gpt-4o-mini';
+
+        analyzeBtn.disabled = true;
+        statusEl.textContent = 'Asking ' + model + '...';
+        outputEl.textContent = '';
+
+        fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + key,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': window.location.href,
+            'X-Title': 'Xteink X4 Debug Assistant'
+          },
+          body: JSON.stringify({
+            model: model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: log }
+            ]
+          })
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            return { ok: res.ok, status: res.status, data: data };
+          });
+        }).then(function (result) {
+          if (!result.ok) {
+            var msg = (result.data && result.data.error && result.data.error.message) || ('HTTP ' + result.status);
+            statusEl.textContent = 'Error: ' + msg;
+            return;
+          }
+          var choice = result.data.choices && result.data.choices[0];
+          var text = choice && choice.message && choice.message.content;
+          outputEl.textContent = text || '(empty response)';
+          statusEl.textContent = 'Done.';
+        }).catch(function (err) {
+          statusEl.textContent = 'Request failed: ' + err.message;
+        }).finally(function () {
+          analyzeBtn.disabled = false;
+        });
       });
     })();
   </script>

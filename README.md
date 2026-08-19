@@ -1,11 +1,15 @@
 # Xteink X4 display debug firmware
 
-A barebones PlatformIO firmware project for debugging display issues on the
-Xteink X4 (ESP32-C3 + SSD1677 800x480 e-paper), built on
+A barebones PlatformIO firmware project for debugging display and button
+hardware issues on the Xteink X4 (ESP32-C3 + SSD1677 800x480 e-paper +
+ADC-ladder buttons), built on
 [freeink-sdk](https://github.com/Free-Ink/freeink-sdk). It initializes the
 display, dumps pin assignments and geometry over serial, draws a test
-pattern, then loops toggling full black/white every 5 seconds while logging
-BUSY pin state and refresh timing.
+pattern, then loops non-blocking: toggles full black/white every 5 seconds
+(logging BUSY pin state and refresh timing) while continuously polling the
+six buttons plus power button, logging every press/release edge and a
+periodic raw-ADC heartbeat so a drifted or flaky divider is visible even
+without a full press.
 
 Everything builds in GitHub Actions — no local toolchain needed. Flash and
 monitor from Chrome over WebSerial.
@@ -13,8 +17,8 @@ monitor from Chrome over WebSerial.
 ## Flashing and monitoring from the GitHub Pages site (easiest)
 
 Every push builds the firmware and deploys a page to
-**https://shelbeeely.github.io/X4-test/** with two independent tools, both
-over WebSerial, no drivers or command line:
+**https://shelbeeely.github.io/X4-test/** with three independent tools, all
+over WebSerial or client-side API calls, no drivers or command line:
 
 - **Flash** — a one-click install button (via
   [ESP Web Tools](https://esphome.github.io/esp-web-tools/), the same widget
@@ -22,7 +26,14 @@ over WebSerial, no drivers or command line:
   build produced. Nothing to download or unzip.
 - **Serial monitor** — a live 115200-baud console built directly into the
   page (plain Web Serial API, independent of the flash button), so you can
-  watch the debug output without any separate app.
+  watch the debug output — display refresh logging and `[BTN]` button
+  press/release/heartbeat lines — without any separate app.
+- **AI debug assistant** — paste an [OpenRouter](https://openrouter.ai/keys)
+  API key (stored only in your browser's `localStorage`, sent straight to
+  OpenRouter, never to any server of ours — this site is static) to send the
+  current console log to an LLM for a second opinion on hardware issues:
+  stuck BUSY pin, odd refresh timing, ADC readings sitting on a
+  classification boundary, missing events, etc.
 
 On a Chromebook or any Chrome/Edge browser:
 
@@ -33,6 +44,9 @@ On a Chromebook or any Chrome/Edge browser:
 4. Under **2. Watch the debug output**, click **Connect** (a separate port
    request — close the flash dialog first if it's still open), then reset
    the board to see the full boot log.
+5. Under **3. Ask an AI about the log**, save your OpenRouter key once, then
+   click **Analyze log with AI** any time you want a read on what the
+   console is showing.
 
 > **One-time repo setup:** GitHub Pages must be enabled once before the
 > `Deploy to GitHub Pages` step in the workflow will succeed: go to
@@ -102,9 +116,11 @@ USB-UART bridge chip), so any WebSerial-based terminal works:
    [Google's Serial Terminal](https://googlechromelabs.github.io/serial-terminal/).
 3. Connect at **115200 baud**.
 4. Reset the board (or replug USB) to see the boot log: the `BoardConfig`
-   pin dump, display geometry, initial refresh timing, then a line every 5s
-   as it toggles black/white, logging the BUSY pin state and refresh
-   duration.
+   pin dump (display and button pins), display geometry, initial refresh
+   timing, then a line every 5s as it toggles black/white logging the BUSY
+   pin state and refresh duration, interleaved with `[BTN]` lines on every
+   button press/release (with the raw ADC readings for both button groups)
+   and a heartbeat line roughly every 2s while idle.
 
 ## Project layout
 
@@ -113,8 +129,9 @@ USB-UART bridge chip), so any WebSerial-based terminal works:
 - `src/main.cpp` — the debug firmware itself.
 - `freeink-sdk/` — [freeink-sdk](https://github.com/Free-Ink/freeink-sdk) as
   a git submodule; `platformio.ini`'s `lib_deps` point at
-  `freeink-sdk/libs/hardware/BoardConfig` and
-  `freeink-sdk/libs/display/FreeInkDisplay` via `symlink://`.
+  `freeink-sdk/libs/hardware/BoardConfig`,
+  `freeink-sdk/libs/display/FreeInkDisplay`, and
+  `freeink-sdk/libs/hardware/InputManager` via `symlink://`.
 - `.github/workflows/build.yml` — builds on every push and on demand, uploads
   the firmware binaries as a workflow artifact, and deploys the Pages
   flashing site.
