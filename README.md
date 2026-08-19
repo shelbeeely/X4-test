@@ -1,13 +1,17 @@
 # Xteink X4 display debug firmware
 
 A barebones PlatformIO firmware project for debugging display and button
-hardware issues on the Xteink X4 (ESP32-C3 + SSD1677 800x480 e-paper +
-ADC-ladder buttons), built on
-[freeink-sdk](https://github.com/Free-Ink/freeink-sdk). It initializes the
-display, dumps pin assignments and geometry over serial, draws the original
-test pattern once, then boots into an on-device, button-driven test menu
-(UP/DOWN to select, CONFIRM to run, BACK to exit a running test) covering
-six different hardware exercises:
+hardware issues on the Xteink X4 (ESP32-C3 + SSD1677/UC8179/UC8279
+800x480 e-paper + ADC-ladder buttons), built on
+[freeink-sdk](https://github.com/Free-Ink/freeink-sdk). At boot it probes
+which panel-controller silicon the unit actually carries — X4-family units
+ship **SSD1677, UC8179, or UC8279 depending on production batch**, all on
+the same pinout — and promotes the driver to match *before* touching the
+panel (see "Screen stuck on its last image?" below), dumps pin assignments
+and geometry over serial, draws the original test pattern once, then boots
+into an on-device, button-driven test menu (UP/DOWN to select, CONFIRM to
+run, BACK to exit a running test) covering seven different hardware
+exercises:
 
 | Menu item | What it tests |
 |---|---|
@@ -16,11 +20,30 @@ six different hardware exercises:
 | `REFRESH` | The same image redrawn with `FULL_REFRESH`, `HALF_REFRESH`, and `FAST_REFRESH` back to back, timing each |
 | `PARTIAL` | A base full-frame draw, then three `displayWindow()` partial updates on a centered box only |
 | `BUTTONS` | A live on-screen readout of both button-ladder ADC groups, the power pin, and the last press/release, refreshed on activity or every ~2s |
+| `PROBE` | Reviews the boot-time controller probe result (VER/FLG bytes, promotion verdict) without rebooting |
 | `FLASH` | The original continuous black/white toggle every 5s, logging BUSY pin state and refresh timing |
 
 Button press/release edges (and an idle raw-ADC heartbeat) are logged to
 serial as `[BTN]` lines regardless of which screen is active, so a drifted
 or flaky divider is visible even without a full press.
+
+### Screen stuck on its last image?
+
+That's the classic symptom of the display driver sending commands the panel
+doesn't understand — most commonly because this specific unit shipped with
+a different controller than the profile assumes. The firmware now probes
+for this at every boot (`freeink::applyXteinkDisplayController()`) and logs
+the result as `[XTDET]` lines: the raw `VER`/`FLG` register bytes, whether
+an UltraChip (UC8179/UC8279) part was confirmed and the driver promoted, a
+dump of the panel's factory MTP config (readable even when nothing is
+visible on screen), and the OEM's own NVS-recorded panel type for
+cross-reference. Check those lines first — either in the serial monitor or
+via the `PROBE` menu item — before suspecting wiring. If the probe confirms
+the default (SSD1677) controller and the screen still doesn't move, the
+next things to check are: the FPC ribbon connecting the panel to the board
+fully seated, and whether `BUSY` ever toggles at all during a refresh (the
+`[LOOP]`/`[FLASH]`/test-screen serial lines report it before and after every
+refresh call).
 
 Everything builds in GitHub Actions — no local toolchain needed. Flash and
 monitor from Chrome over WebSerial.
@@ -126,12 +149,13 @@ USB-UART bridge chip), so any WebSerial-based terminal works:
    **Logs** view, or a standalone tool like
    [Google's Serial Terminal](https://googlechromelabs.github.io/serial-terminal/).
 3. Connect at **115200 baud**.
-4. Reset the board (or replug USB) to see the boot log: the `BoardConfig`
-   pin dump (display and button pins), display geometry, initial refresh
-   timing, then `=== TEST: ... ===` lines whenever you run something from
-   the on-device menu, interleaved with `[BTN]` lines on every button
-   press/release (with the raw ADC readings for both button groups) and a
-   heartbeat line roughly every 2s while idle.
+4. Reset the board (or replug USB) to see the boot log: `[XTDET]` lines from
+   the panel-controller probe (see "Screen stuck on its last image?" above),
+   the `BoardConfig` pin dump (display and button pins), display geometry,
+   and initial refresh timing, then `=== TEST: ... ===` lines whenever you
+   run something from the on-device menu, interleaved with `[BTN]` lines on
+   every button press/release (with the raw ADC readings for both button
+   groups) and a heartbeat line roughly every 2s while idle.
 
 ## Project layout
 
@@ -141,8 +165,9 @@ USB-UART bridge chip), so any WebSerial-based terminal works:
 - `freeink-sdk/` — [freeink-sdk](https://github.com/Free-Ink/freeink-sdk) as
   a git submodule; `platformio.ini`'s `lib_deps` point at
   `freeink-sdk/libs/hardware/BoardConfig`,
-  `freeink-sdk/libs/display/FreeInkDisplay`, and
-  `freeink-sdk/libs/hardware/InputManager` via `symlink://`.
+  `freeink-sdk/libs/display/FreeInkDisplay`,
+  `freeink-sdk/libs/hardware/InputManager`, and
+  `freeink-sdk/libs/hardware/XteinkDetect` via `symlink://`.
 - `.github/workflows/build.yml` — builds on every push and on demand, uploads
   the firmware binaries as a workflow artifact, and deploys the Pages
   flashing site.

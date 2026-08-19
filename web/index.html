@@ -149,18 +149,23 @@
   </p>
   <p>
     After connecting, reset the board (or replug USB) to see the full boot
-    log from the start: the <code>BoardConfig</code> pin dump (display
-    <em>and</em> button pins), display geometry, and initial refresh timing.
-    The board then boots into an on-device test menu &mdash; UP/DOWN to
-    select, CONFIRM to run, BACK to exit a running test &mdash; covering the
-    original pattern, a checkerboard ghosting check, a FULL/HALF/FAST
-    refresh-mode comparison, a partial-window update test, a live
-    button/ADC readout, and the original continuous flash-stress loop; each
-    run logs an <code>=== TEST: ... ===</code> block. A <code>[BTN]</code>
-    line is logged on every button press/release (or roughly every 2s while
-    idle) regardless of which screen is active, carrying the raw ADC reading
-    for both button groups so a drifted or flaky divider is visible even
-    without a full press.
+    log from the start: <code>[XTDET]</code> lines from the panel-controller
+    probe (X4-family units ship SSD1677, UC8179, or UC8279 depending on
+    production batch &mdash; sending the wrong one's commands is the classic
+    "screen stuck on its last image" cause, so this runs and promotes the
+    driver automatically before anything touches the panel), the
+    <code>BoardConfig</code> pin dump (display <em>and</em> button pins),
+    display geometry, and initial refresh timing. The board then boots into
+    an on-device test menu &mdash; UP/DOWN to select, CONFIRM to run, BACK to
+    exit a running test &mdash; covering the original pattern, a
+    checkerboard ghosting check, a FULL/HALF/FAST refresh-mode comparison, a
+    partial-window update test, a live button/ADC readout, a review of the
+    controller-probe result, and the original continuous flash-stress loop;
+    each run logs an <code>=== TEST: ... ===</code> block. A
+    <code>[BTN]</code> line is logged on every button press/release (or
+    roughly every 2s while idle) regardless of which screen is active,
+    carrying the raw ADC reading for both button groups so a drifted or
+    flaky divider is visible even without a full press.
   </p>
 
   <h2>3. Ask an AI about the log</h2>
@@ -309,28 +314,44 @@
 
       var SYSTEM_PROMPT = [
         'You are helping debug firmware for the Xteink X4, an ESP32-C3 board',
-        'driving an SSD1677 800x480 e-paper display via the freeink-sdk',
-        'library, plus six buttons (Back/Confirm/Left/Right/Up/Down) read as',
-        'an ADC resistor ladder on two analog pins, and a separate power',
-        'button GPIO. The serial log below is from a debug firmware that at',
-        'boot dumps the BoardConfig pin assignments (display and button) and',
-        'display geometry, draws a test pattern with one FULL_REFRESH, then',
-        'boots into an on-device button-driven test menu with six screens:',
-        'PATTERN (the boot pattern again), CHECKER (a checkerboard, for',
-        'ghosting/moire), REFRESH (the same image redrawn with FULL_REFRESH,',
-        'HALF_REFRESH, and FAST_REFRESH back to back, timing each), PARTIAL',
-        '(a base full-frame draw then three displayWindow() partial updates',
-        'on a centered box), BUTTONS (a live on-screen ADC/button readout),',
-        'and FLASH (the original continuous full black/white toggle every',
-        '5s). Each menu run logs an "=== TEST: ... ===" block with timings.',
-        'Separately, a [BTN] line is logged on every button press/release',
-        'edge plus a raw-ADC heartbeat roughly every 2s while idle (format:',
-        'g1/g2 raw ADC value -> classified button, and power pin state),',
-        'regardless of which menu screen is active. Given this log, point',
-        'out anything that looks like a hardware issue: a BUSY pin stuck',
-        'high/low, refresh or displayWindow timings that look abnormal, ADC',
-        'readings that sit right on a classification boundary or drift over',
-        'time (suggesting a marginal button or divider), missing expected',
+        'driving an 800x480 e-paper display via the freeink-sdk library.',
+        'X4-family units ship with SSD1677, UC8179, or UC8279 panel',
+        'controllers depending on production batch, all on the same pinout,',
+        'so at every boot the firmware bus-probes which one this unit',
+        'actually carries and promotes the driver to match BEFORE touching',
+        'the panel (freeink::applyXteinkDisplayController()), logging',
+        '"[XTDET]" lines: the raw VER/FLG register bytes, the verdict',
+        '(default vs UltraChip confirmed), whether the driver was promoted,',
+        'an MTP factory-config dump when readable, and the OEM NVS',
+        'hw_calib/screenType value for cross-reference (info only, never the',
+        'decision). Sending the wrong controller a command set it does not',
+        'understand is the classic cause of a panel that never updates and',
+        'stays on whatever image it last showed, so treat a probe verdict of',
+        '"inconclusive" or one that disagrees with the NVS value as a strong',
+        'lead. The board also has six buttons (Back/Confirm/Left/Right/Up/',
+        'Down) read as an ADC resistor ladder on two analog pins, plus a',
+        'separate power button GPIO. After the controller probe, the',
+        'firmware dumps the BoardConfig pin assignments (display and',
+        'button) and display geometry, draws a test pattern with one',
+        'FULL_REFRESH, then boots into an on-device button-driven test menu',
+        'with seven screens: PATTERN (the boot pattern again), CHECKER (a',
+        'checkerboard, for ghosting/moire), REFRESH (the same image redrawn',
+        'with FULL_REFRESH, HALF_REFRESH, and FAST_REFRESH back to back,',
+        'timing each), PARTIAL (a base full-frame draw then three',
+        'displayWindow() partial updates on a centered box), BUTTONS (a',
+        'live on-screen ADC/button readout), PROBE (re-displays the cached',
+        'controller-probe result), and FLASH (the original continuous full',
+        'black/white toggle every 5s). Each menu run logs an',
+        '"=== TEST: ... ===" block with timings. Separately, a [BTN] line',
+        'is logged on every button press/release edge plus a raw-ADC',
+        'heartbeat roughly every 2s while idle (format: g1/g2 raw ADC',
+        'value -> classified button, and power pin state), regardless of',
+        'which menu screen is active. Given this log, point out anything',
+        'that looks like a hardware issue: a display-controller probe that',
+        'is inconclusive or disagrees with NVS, a BUSY pin stuck high/low,',
+        'refresh or displayWindow timings that look abnormal, ADC readings',
+        'that sit right on a classification boundary or drift over time',
+        '(suggesting a marginal button or divider), missing expected',
         'events, or anything else inconsistent with correct operation. Be',
         'specific and concise, and say plainly if the log looks healthy.'
       ].join(' ');

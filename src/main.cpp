@@ -1,19 +1,26 @@
 // Xteink X4 hardware bring-up / debug firmware.
 //
-// No SD card, no FreeInkUI. Boots straight into a button-driven on-device
-// test menu (UP/DOWN select, CONFIRM run, BACK exits a running test) that
+// No SD card, no FreeInkUI. At boot, probes which panel-controller silicon
+// this unit actually carries (X4-family units ship SSD1677, UC8179, or
+// UC8279 depending on production batch — see freeink-sdk's XteinkDetect) and
+// promotes the driver to match before touching the panel, since sending the
+// wrong controller's command set is a classic "screen never updates, stays
+// on its last image" symptom. Then boots into a button-driven on-device test
+// menu (UP/DOWN select, CONFIRM run, BACK exits a running test) that
 // exercises the display and button hardware from several different angles:
 // the original border/corner/diagonal/text pattern, a checkerboard for
 // ghosting/moire, a FULL/HALF/FAST refresh-mode timing comparison, a
 // displayWindow() partial-refresh test, a live button/ADC readout screen,
-// and the original continuous black/white flash-stress loop. Button
-// press/release edges (and an idle raw-ADC heartbeat) are logged to serial
-// regardless of which screen is active. Monitor at 115200 baud.
+// a controller-probe review screen, and the original continuous black/white
+// flash-stress loop. Button press/release edges (and an idle raw-ADC
+// heartbeat) are logged to serial regardless of which screen is active.
+// Monitor at 115200 baud.
 
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
 #include <InputManager.h>
+#include <XteinkDetect.h>
 
 #include <cctype>
 #include <cstdio>
@@ -352,6 +359,34 @@ static void runPartialWindowTest() {
   waitForAnyButtonPress();
 }
 
+static void runControllerProbeTest() {
+  Serial.println();
+  Serial.println("=== TEST: Display controller probe (cached from boot) ===");
+  const freeink::XteinkDisplayProbeDiag& diag = freeink::getXteinkDisplayProbeDiag();
+  if (!diag.valid) {
+    Serial.println("  No probe has run this boot.");
+  } else {
+    Serial.printf("  VER: %02X %02X %02X %02X %02X  FLG: %02X\n", diag.ver[0], diag.ver[1], diag.ver[2],
+                  diag.ver[3], diag.ver[4], diag.flg);
+    Serial.printf("  verdict=%u promoted=%d\n", diag.verdict, diag.promoted);
+    if (diag.mtpValid) {
+      Serial.print("  MTP:");
+      for (uint8_t b : diag.mtp) Serial.printf(" %02X", b);
+      Serial.println();
+    }
+  }
+  Serial.printf("  ACTIVE.displayController now = %u\n", static_cast<unsigned>(ACTIVE.displayController));
+  Serial.println("=== TEST complete: press any button to return to menu ===");
+
+  display->clearScreen(0xFF);
+  drawText(40, 40, "CONTROLLER PROBE", 3);
+  drawText(40, 100, diag.valid ? (diag.promoted ? "PROMOTED" : "DEFAULT OK") : "NO PROBE RUN", 3);
+  drawText(40, 200, "SEE SERIAL LOG", 3);
+  drawText(40, 240, "PRESS BUTTON", 3);
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+  waitForAnyButtonPress();
+}
+
 // --- Continuous test screens (own loop, BACK exits) -------------------------
 
 static void drawButtonLiveScreen(const InputManager::ButtonAdcSample& g1, const InputManager::ButtonAdcSample& g2,
@@ -470,15 +505,19 @@ static void runFlashStressTest() {
 
 // --- Menu --------------------------------------------------------------------
 
-static const char* kMenuLabels[] = {"PATTERN", "CHECKER", "REFRESH", "PARTIAL", "BUTTONS", "FLASH"};
+static const char* kMenuLabels[] = {"PATTERN", "CHECKER", "REFRESH", "PARTIAL", "BUTTONS", "PROBE", "FLASH"};
 static constexpr uint8_t kMenuCount = sizeof(kMenuLabels) / sizeof(kMenuLabels[0]);
 static uint8_t menuSelected = 0;
 
 static void drawMenu(uint8_t selected) {
   display->clearScreen(0xFF);
-  drawText(40, 20, "TEST MENU", 3);
+  drawText(40, 15, "TEST MENU", 3);
 
-  int y = 90;
+  // Row spacing is sized to fit kMenuCount items + a two-line footer inside
+  // the 480px panel height (checked against kMenuCount, not hardcoded — see
+  // the assert below if a future menu item pushes it too far).
+  const int rowH = 40;
+  int y = 60;
   for (uint8_t i = 0; i < kMenuCount; i++) {
     if (i == selected) {
       // Filled cursor triangle to the left of the selected label.
@@ -489,11 +528,11 @@ static void drawMenu(uint8_t selected) {
       }
     }
     drawText(80, y, kMenuLabels[i], 3);
-    y += 50;
+    y += rowH;
   }
 
   drawText(40, y + 20, "UP DOWN SELECT", 3);
-  drawText(40, y + 60, "CONFIRM RUN", 3);
+  drawText(40, y + 55, "CONFIRM RUN", 3);
 }
 
 static void runSelectedTest(uint8_t index) {
@@ -514,6 +553,9 @@ static void runSelectedTest(uint8_t index) {
       runButtonLiveTest();
       break;
     case 5:
+      runControllerProbeTest();
+      break;
+    case 6:
       runFlashStressTest();
       break;
     default:
@@ -567,6 +609,17 @@ void setup() {
   // this is asserted; a no-op on units that self-latch. Real board-bring-up,
   // not app logic — see BoardConfig::holdPowerRails().
   BoardConfig::holdPowerRails();
+
+  // X4-family panels ship SSD1677, UC8179, or UC8279 depending on production
+  // batch, all on the same pinout. Probe which one this unit actually has
+  // and promote BoardConfig::ACTIVE.displayController to match BEFORE the
+  // display driver is constructed — sending SSD1677 commands to a UC8179/
+  // UC8279 panel (or vice versa) is a classic "never updates, stays on
+  // whatever it last showed" symptom. Logs full [XTDET] diagnostics
+  // (VER/FLG bytes, MTP dump, NVS cross-reference) to serial itself.
+  Serial.println("Probing Xteink display-controller silicon...");
+  bool controllerPromoted = freeink::applyXteinkDisplayController();
+  Serial.printf("Controller promoted from profile default: %s\n", controllerPromoted ? "YES" : "no");
 
   dumpBoardConfig();
 
