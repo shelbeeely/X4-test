@@ -10,6 +10,30 @@ BUSY pin state and refresh timing.
 Everything builds in GitHub Actions — no local toolchain needed. Flash and
 monitor from Chrome over WebSerial.
 
+## Flashing from the GitHub Pages site (easiest)
+
+Every push builds the firmware and deploys a one-click flashing page to
+**https://shelbeeely.github.io/X4-test/** (via
+[ESP Web Tools](https://esphome.github.io/esp-web-tools/), the same widget
+behind ESPHome Web). On a Chromebook or any Chrome/Edge browser:
+
+1. Plug the X4 in over USB.
+2. Open the Pages URL above.
+3. Click **Connect & Flash**, pick the serial port, and confirm.
+4. Once it's done, use the same dialog's **Logs & Console** option to open a
+   115200-baud serial monitor and watch the debug output.
+
+The page always flashes whatever the latest successful build produced —
+nothing to download or unzip.
+
+> **One-time repo setup:** GitHub Pages must be enabled once before the
+> `Deploy to GitHub Pages` step in the workflow will succeed: go to
+> **Settings → Pages → Build and deployment → Source** and select
+> **GitHub Actions**. After that, every push deploys automatically.
+
+If Web Serial or GitHub Pages isn't an option, use the manual download +
+esptool-js/ESPHome Web flow below instead.
+
 ## Building
 
 Every push to any branch triggers a build automatically. You can also
@@ -83,5 +107,9 @@ USB-UART bridge chip), so any WebSerial-based terminal works:
   a git submodule; `platformio.ini`'s `lib_deps` point at
   `freeink-sdk/libs/hardware/BoardConfig` and
   `freeink-sdk/libs/display/FreeInkDisplay` via `symlink://`.
-- `.github/workflows/build.yml` — builds on every push and on demand, and
-  uploads the firmware binaries as a workflow artifact.
+- `.github/workflows/build.yml` — builds on every push and on demand, uploads
+  the firmware binaries as a workflow artifact, and deploys the Pages
+  flashing site.
+- `web/` — the GitHub Pages flashing site (`index.html` is committed; the
+  workflow generates `web/firmware/firmware.merged.bin` and `manifest.json`
+  at build time — see `.gitignore`).

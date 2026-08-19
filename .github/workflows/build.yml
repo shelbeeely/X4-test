@@ -4,9 +4,21 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out repository (with submodules)
         uses: actions/checkout@v4
@@ -35,3 +47,39 @@ jobs:
             .pio/build/xteink_x4/*.bin
             .pio/build/xteink_x4/*.elf
           if-no-files-found: error
+
+      # --- GitHub Pages flashing site (ESP Web Tools) -----------------------
+      # Bundles the merged, single-offset binary + a manifest next to the
+      # static web/ site so <esp-web-install-button> can flash it directly
+      # over WebSerial. Needs Pages enabled once: repo Settings -> Pages ->
+      # Build and deployment -> Source -> "GitHub Actions".
+      - name: Assemble GitHub Pages site
+        run: |
+          mkdir -p web/firmware
+          cp .pio/build/xteink_x4/firmware.merged.bin web/firmware/firmware.merged.bin
+          cat > web/firmware/manifest.json <<EOF
+          {
+            "name": "Xteink X4 Debug Firmware",
+            "version": "${GITHUB_SHA::7}",
+            "builds": [
+              {
+                "chipFamily": "ESP32-C3",
+                "parts": [
+                  { "path": "firmware.merged.bin", "offset": 0 }
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
