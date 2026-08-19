@@ -99,6 +99,37 @@
     margin: 0;
     min-height: 1.5rem;
   }
+  #cam-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    flex-wrap: wrap;
+  }
+  #cam-controls button {
+    font-size: 0.95rem;
+    padding: 0.5em 1.1em;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+  }
+  #cam-controls button:disabled { color: #999; cursor: default; }
+  #cam-preview {
+    width: 100%;
+    max-width: 360px;
+    border-radius: 8px;
+    background: #000;
+    display: block;
+    margin-top: 0.5rem;
+  }
+  #cam-thumb {
+    width: 160px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    margin-top: 0.5rem;
+    display: block;
+  }
+  #cam-status { font-size: 0.85rem; color: #666; margin: 0.4rem 0; min-height: 1.2em; }
   footer { margin-top: 3rem; font-size: 0.9rem; color: #666; }
 </style>
 </head>
@@ -168,19 +199,38 @@
     flaky divider is visible even without a full press.
   </p>
 
-  <h2>3. Ask an AI about the log</h2>
+  <h2>3. Show the AI a photo of the panel (optional)</h2>
+  <p>
+    Uses this device's camera to capture a still of the physical e-paper
+    panel, so the AI can check whether it visually matches what the active
+    test screen is supposed to look like &mdash; not just whether the
+    firmware <em>logged</em> success. Point the camera at the panel before
+    capturing.
+  </p>
+  <div id="cam-controls">
+    <button id="cam-enable">Enable camera</button>
+    <button id="cam-capture" disabled>Capture photo</button>
+    <button id="cam-clear">Clear photo</button>
+  </div>
+  <video id="cam-preview" autoplay playsinline hidden></video>
+  <canvas id="cam-canvas" hidden></canvas>
+  <img id="cam-thumb" alt="Captured panel photo" hidden>
+  <div id="cam-status">Camera access requires your permission and isn't stored anywhere &mdash; only the captured still is (in this page's memory) until you clear it or reload.</div>
+
+  <h2>4. Ask an AI about the log (and photo)</h2>
   <p>
     Paste an <a href="https://openrouter.ai/keys">OpenRouter</a> API key to
-    send whatever's currently in the console above to an LLM for a second
-    opinion &mdash; useful for spotting hardware issues (a stuck BUSY pin,
-    odd refresh timing, button ADC readings sitting on a classification
-    boundary, missing events) that are easy to miss skimming a long log by
-    eye.
+    send whatever's currently in the console above &mdash; plus the captured
+    photo, if you took one &mdash; to an LLM for a second opinion. Useful for
+    spotting hardware issues (a stuck BUSY pin, odd refresh timing, button
+    ADC readings sitting on a classification boundary, missing events, or a
+    panel that visually doesn't match what a test screen should show) that
+    are easy to miss skimming a long log by eye.
   </p>
   <p class="note">
-    Your key is stored only in this browser's <code>localStorage</code> and
-    sent straight to OpenRouter's API &mdash; this page is static with no
-    server of its own to see it.
+    Your key (and the captured photo, when you send one) go only from this
+    browser straight to OpenRouter's API &mdash; this page is static with no
+    server of its own to see either.
   </p>
   <div id="ai-controls">
     <input id="ai-key" type="password" placeholder="OpenRouter API key (sk-or-...)" autocomplete="off">
@@ -191,7 +241,7 @@
     <input id="ai-model" type="text" value="openai/gpt-4o-mini" placeholder="model id, e.g. openai/gpt-4o-mini">
     <button id="ai-analyze">Analyze log with AI</button>
   </div>
-  <div id="ai-status">Sends up to the last ~8000 characters of the console above.</div>
+  <div id="ai-status">Sends up to the last ~8000 characters of the console above, plus the captured photo if you took one (the default model supports images; if you switch models, pick one that does too when sending a photo).</div>
   <pre id="ai-output"></pre>
 
   <footer>
@@ -282,6 +332,58 @@
 
   <script>
     (function () {
+      var camPreview = document.getElementById('cam-preview');
+      var camCanvas = document.getElementById('cam-canvas');
+      var camThumb = document.getElementById('cam-thumb');
+      var camEnableBtn = document.getElementById('cam-enable');
+      var camCaptureBtn = document.getElementById('cam-capture');
+      var camClearBtn = document.getElementById('cam-clear');
+      var camStatus = document.getElementById('cam-status');
+
+      var camStream = null;
+      var capturedPhotoDataUrl = null;
+
+      function enableCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          camStatus.textContent = "This browser doesn't support camera access.";
+          return;
+        }
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }).then(function (stream) {
+          camStream = stream;
+          camPreview.srcObject = stream;
+          camPreview.hidden = false;
+          camCaptureBtn.disabled = false;
+          camEnableBtn.disabled = true;
+          camStatus.textContent = 'Camera on — point it at the panel, then Capture.';
+        }).catch(function (err) {
+          camStatus.textContent = 'Camera access failed: ' + err.message;
+        });
+      }
+
+      function capturePhoto() {
+        if (!camStream) return;
+        var w = camPreview.videoWidth;
+        var h = camPreview.videoHeight;
+        camCanvas.width = w;
+        camCanvas.height = h;
+        camCanvas.getContext('2d').drawImage(camPreview, 0, 0, w, h);
+        capturedPhotoDataUrl = camCanvas.toDataURL('image/jpeg', 0.85);
+        camThumb.src = capturedPhotoDataUrl;
+        camThumb.hidden = false;
+        camStatus.textContent = 'Photo captured — will be sent with the next AI analysis.';
+      }
+
+      function clearPhoto() {
+        capturedPhotoDataUrl = null;
+        camThumb.hidden = true;
+        camThumb.src = '';
+        camStatus.textContent = 'Photo cleared.';
+      }
+
+      camEnableBtn.addEventListener('click', enableCamera);
+      camCaptureBtn.addEventListener('click', capturePhoto);
+      camClearBtn.addEventListener('click', clearPhoto);
+
       var STORAGE_KEY = 'xteink_x4_openrouter_key';
       var MAX_LOG_CHARS = 8000;
 
@@ -352,8 +454,17 @@
         'refresh or displayWindow timings that look abnormal, ADC readings',
         'that sit right on a classification boundary or drift over time',
         '(suggesting a marginal button or divider), missing expected',
-        'events, or anything else inconsistent with correct operation. Be',
-        'specific and concise, and say plainly if the log looks healthy.'
+        'events, or anything else inconsistent with correct operation. You',
+        'may also receive a photo of the physical panel, taken with the',
+        "debugger's webcam pointed at it. If so, check whether it visually",
+        'matches what the log says should be showing for the menu screen',
+        'that was last run (e.g. PATTERN should show a border frame, corner',
+        'blocks, a diagonal line, and "XTEINK X4"/"800X480" text; CHECKER',
+        'should show an even checkerboard; FLASH should be solid black or',
+        'solid white) — call out a blank, garbled, partially-updated panel,',
+        'or one stuck on an image from a different test than the log',
+        'implies. Be specific and concise, and say plainly if everything',
+        'looks healthy.'
       ].join(' ');
 
       analyzeBtn.addEventListener('click', function () {
@@ -366,8 +477,21 @@
 
         var model = modelInput.value.trim() || 'openai/gpt-4o-mini';
 
+        var userMessage;
+        if (capturedPhotoDataUrl) {
+          userMessage = {
+            role: 'user',
+            content: [
+              { type: 'text', text: log },
+              { type: 'image_url', image_url: { url: capturedPhotoDataUrl } }
+            ]
+          };
+        } else {
+          userMessage = { role: 'user', content: log };
+        }
+
         analyzeBtn.disabled = true;
-        statusEl.textContent = 'Asking ' + model + '...';
+        statusEl.textContent = 'Asking ' + model + (capturedPhotoDataUrl ? ' (with photo)...' : '...');
         outputEl.textContent = '';
 
         fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -382,7 +506,7 @@
             model: model,
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: log }
+              userMessage
             ]
           })
         }).then(function (res) {

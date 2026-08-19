@@ -51,8 +51,9 @@ monitor from Chrome over WebSerial.
 ## Flashing and monitoring from the GitHub Pages site (easiest)
 
 Every push builds the firmware and deploys a page to
-**https://shelbeeely.github.io/X4-test/** with three independent tools, all
-over WebSerial or client-side API calls, no drivers or command line:
+**https://shelbeeely.github.io/X4-test/** with four independent tools, all
+over WebSerial, the camera API, or client-side API calls — no drivers or
+command line:
 
 - **Flash** — a one-click install button (via
   [ESP Web Tools](https://esphome.github.io/esp-web-tools/), the same widget
@@ -62,12 +63,18 @@ over WebSerial or client-side API calls, no drivers or command line:
   page (plain Web Serial API, independent of the flash button), so you can
   watch the debug output — display refresh logging and `[BTN]` button
   press/release/heartbeat lines — without any separate app.
+- **Panel camera capture** — grabs a still from this device's camera (plain
+  `getUserMedia`, nothing uploaded anywhere) so the AI assistant can check
+  whether the physical panel visually matches what a test screen should
+  show, not just what the firmware logged.
 - **AI debug assistant** — paste an [OpenRouter](https://openrouter.ai/keys)
   API key (stored only in your browser's `localStorage`, sent straight to
   OpenRouter, never to any server of ours — this site is static) to send the
-  current console log to an LLM for a second opinion on hardware issues:
-  stuck BUSY pin, odd refresh timing, ADC readings sitting on a
-  classification boundary, missing events, etc.
+  current console log — and the captured photo, if you took one — to an LLM
+  for a second opinion on hardware issues: stuck BUSY pin, odd refresh
+  timing, ADC readings sitting on a classification boundary, missing
+  events, a panel that looks blank/garbled/stuck compared to what the log
+  says it should show, etc.
 
 On a Chromebook or any Chrome/Edge browser:
 
@@ -78,9 +85,12 @@ On a Chromebook or any Chrome/Edge browser:
 4. Under **2. Watch the debug output**, click **Connect** (a separate port
    request — close the flash dialog first if it's still open), then reset
    the board to see the full boot log.
-5. Under **3. Ask an AI about the log**, save your OpenRouter key once, then
-   click **Analyze log with AI** any time you want a read on what the
-   console is showing.
+5. Under **3. Show the AI a photo of the panel**, click **Enable camera**,
+   point it at the X4's screen, and **Capture photo** (optional — skip this
+   step for a log-only analysis).
+6. Under **4. Ask an AI about the log (and photo)**, save your OpenRouter
+   key once, then click **Analyze log with AI** any time you want a read on
+   what the console (and panel, if captured) is showing.
 
 > **One-time repo setup:** GitHub Pages must be enabled once before the
 > `Deploy to GitHub Pages` step in the workflow will succeed: go to
