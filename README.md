@@ -62,9 +62,9 @@ directly from Chrome.
 
 **Flash offset:** use `firmware.merged.bin` at offset **`0x0`**. It already
 contains the bootloader (0x0), partition table (0x8000), and application
-(0x10000) merged into one image (`platformio.ini` sets
-`board_build.merge_bin = true` for exactly this reason), so you don't need to
-juggle three separate offsets.
+(0x10000) merged into one image — the workflow builds it with `esptool.py
+merge_bin` right after `pio run` — so you don't need to juggle three
+separate offsets.
 
 - **ESPHome Web** (simplest): open the site, click **Connect**, pick the
   X4's serial port, choose **Install** → **Install from file**, select

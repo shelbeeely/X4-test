@@ -39,6 +39,20 @@ jobs:
       - name: List build output
         run: ls -la .pio/build/xteink_x4/
 
+      # board_build.merge_bin is an ESP-IDF-only PlatformIO feature and is a
+      # no-op on this Arduino-framework build, so merge explicitly: this is
+      # what both the raw-artifact download and the Pages manifest flash.
+      - name: Merge into a single flashable image
+        run: |
+          pip install esptool
+          python -m esptool --chip esp32c3 merge_bin \
+            -o .pio/build/xteink_x4/firmware.merged.bin \
+            --flash_mode dio --flash_size 16MB \
+            0x0 .pio/build/xteink_x4/bootloader.bin \
+            0x8000 .pio/build/xteink_x4/partitions.bin \
+            0x10000 .pio/build/xteink_x4/firmware.bin
+          ls -la .pio/build/xteink_x4/firmware.merged.bin
+
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
