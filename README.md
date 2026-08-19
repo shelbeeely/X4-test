@@ -4,12 +4,23 @@ A barebones PlatformIO firmware project for debugging display and button
 hardware issues on the Xteink X4 (ESP32-C3 + SSD1677 800x480 e-paper +
 ADC-ladder buttons), built on
 [freeink-sdk](https://github.com/Free-Ink/freeink-sdk). It initializes the
-display, dumps pin assignments and geometry over serial, draws a test
-pattern, then loops non-blocking: toggles full black/white every 5 seconds
-(logging BUSY pin state and refresh timing) while continuously polling the
-six buttons plus power button, logging every press/release edge and a
-periodic raw-ADC heartbeat so a drifted or flaky divider is visible even
-without a full press.
+display, dumps pin assignments and geometry over serial, draws the original
+test pattern once, then boots into an on-device, button-driven test menu
+(UP/DOWN to select, CONFIRM to run, BACK to exit a running test) covering
+six different hardware exercises:
+
+| Menu item | What it tests |
+|---|---|
+| `PATTERN` | The original border/corner-blocks/diagonal/text pattern, one `FULL_REFRESH` |
+| `CHECKER` | A fine checkerboard, for spotting ghosting/moiré/dead rows or columns |
+| `REFRESH` | The same image redrawn with `FULL_REFRESH`, `HALF_REFRESH`, and `FAST_REFRESH` back to back, timing each |
+| `PARTIAL` | A base full-frame draw, then three `displayWindow()` partial updates on a centered box only |
+| `BUTTONS` | A live on-screen readout of both button-ladder ADC groups, the power pin, and the last press/release, refreshed on activity or every ~2s |
+| `FLASH` | The original continuous black/white toggle every 5s, logging BUSY pin state and refresh timing |
+
+Button press/release edges (and an idle raw-ADC heartbeat) are logged to
+serial as `[BTN]` lines regardless of which screen is active, so a drifted
+or flaky divider is visible even without a full press.
 
 Everything builds in GitHub Actions — no local toolchain needed. Flash and
 monitor from Chrome over WebSerial.
@@ -117,10 +128,10 @@ USB-UART bridge chip), so any WebSerial-based terminal works:
 3. Connect at **115200 baud**.
 4. Reset the board (or replug USB) to see the boot log: the `BoardConfig`
    pin dump (display and button pins), display geometry, initial refresh
-   timing, then a line every 5s as it toggles black/white logging the BUSY
-   pin state and refresh duration, interleaved with `[BTN]` lines on every
-   button press/release (with the raw ADC readings for both button groups)
-   and a heartbeat line roughly every 2s while idle.
+   timing, then `=== TEST: ... ===` lines whenever you run something from
+   the on-device menu, interleaved with `[BTN]` lines on every button
+   press/release (with the raw ADC readings for both button groups) and a
+   heartbeat line roughly every 2s while idle.
 
 ## Project layout
 

@@ -150,12 +150,17 @@
   <p>
     After connecting, reset the board (or replug USB) to see the full boot
     log from the start: the <code>BoardConfig</code> pin dump (display
-    <em>and</em> button pins), display geometry, initial refresh timing, a
-    line every 5 seconds as the firmware toggles the panel black/white
-    logging BUSY pin state and refresh duration, and a <code>[BTN]</code>
-    line every time a button is pressed/released or roughly every 2s while
-    idle &mdash; each one carries the raw ADC reading for both button groups,
-    so a drifted or flaky divider is visible even without a full press.
+    <em>and</em> button pins), display geometry, and initial refresh timing.
+    The board then boots into an on-device test menu &mdash; UP/DOWN to
+    select, CONFIRM to run, BACK to exit a running test &mdash; covering the
+    original pattern, a checkerboard ghosting check, a FULL/HALF/FAST
+    refresh-mode comparison, a partial-window update test, a live
+    button/ADC readout, and the original continuous flash-stress loop; each
+    run logs an <code>=== TEST: ... ===</code> block. A <code>[BTN]</code>
+    line is logged on every button press/release (or roughly every 2s while
+    idle) regardless of which screen is active, carrying the raw ADC reading
+    for both button groups so a drifted or flaky divider is visible even
+    without a full press.
   </p>
 
   <h2>3. Ask an AI about the log</h2>
@@ -310,17 +315,24 @@
         'button GPIO. The serial log below is from a debug firmware that at',
         'boot dumps the BoardConfig pin assignments (display and button) and',
         'display geometry, draws a test pattern with one FULL_REFRESH, then',
-        'loops toggling the panel full black/white every 5 seconds while',
-        'logging the BUSY pin state and refresh duration, and separately',
-        'logs a [BTN] line on every button press/release edge plus a raw-ADC',
-        'heartbeat roughly every 2s while idle (format: g1/g2 raw ADC value',
-        '-> classified button, and power pin state). Given this log, point',
+        'boots into an on-device button-driven test menu with six screens:',
+        'PATTERN (the boot pattern again), CHECKER (a checkerboard, for',
+        'ghosting/moire), REFRESH (the same image redrawn with FULL_REFRESH,',
+        'HALF_REFRESH, and FAST_REFRESH back to back, timing each), PARTIAL',
+        '(a base full-frame draw then three displayWindow() partial updates',
+        'on a centered box), BUTTONS (a live on-screen ADC/button readout),',
+        'and FLASH (the original continuous full black/white toggle every',
+        '5s). Each menu run logs an "=== TEST: ... ===" block with timings.',
+        'Separately, a [BTN] line is logged on every button press/release',
+        'edge plus a raw-ADC heartbeat roughly every 2s while idle (format:',
+        'g1/g2 raw ADC value -> classified button, and power pin state),',
+        'regardless of which menu screen is active. Given this log, point',
         'out anything that looks like a hardware issue: a BUSY pin stuck',
-        'high/low, refresh timings that look abnormal, ADC readings that sit',
-        'right on a classification boundary or drift over time (suggesting a',
-        'marginal button or divider), missing expected events, or anything',
-        'else inconsistent with correct operation. Be specific and concise,',
-        'and say plainly if the log looks healthy.'
+        'high/low, refresh or displayWindow timings that look abnormal, ADC',
+        'readings that sit right on a classification boundary or drift over',
+        'time (suggesting a marginal button or divider), missing expected',
+        'events, or anything else inconsistent with correct operation. Be',
+        'specific and concise, and say plainly if the log looks healthy.'
       ].join(' ');
 
       analyzeBtn.addEventListener('click', function () {

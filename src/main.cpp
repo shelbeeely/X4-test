@@ -1,17 +1,22 @@
-// Xteink X4 display + button bring-up / debug firmware.
+// Xteink X4 hardware bring-up / debug firmware.
 //
-// No SD card, no UI layer. Init the display, dump BoardConfig pin
-// assignments + geometry over serial, draw a test pattern with one
-// FULL_REFRESH, then loop non-blocking: toggle full black/white every 5s
-// (logging BUSY pin state and refresh timing) while continuously polling the
-// six ADC-ladder buttons + power button, logging every press/release edge
-// plus a periodic raw-ADC heartbeat so a drifted/flaky divider is visible
-// even without a full press. Monitor at 115200 baud.
+// No SD card, no FreeInkUI. Boots straight into a button-driven on-device
+// test menu (UP/DOWN select, CONFIRM run, BACK exits a running test) that
+// exercises the display and button hardware from several different angles:
+// the original border/corner/diagonal/text pattern, a checkerboard for
+// ghosting/moire, a FULL/HALF/FAST refresh-mode timing comparison, a
+// displayWindow() partial-refresh test, a live button/ADC readout screen,
+// and the original continuous black/white flash-stress loop. Button
+// press/release edges (and an idle raw-ADC heartbeat) are logged to serial
+// regardless of which screen is active. Monitor at 115200 baud.
 
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <EInkDisplay.h>
 #include <InputManager.h>
+
+#include <cctype>
+#include <cstdio>
 
 using namespace BoardConfig;
 
@@ -24,7 +29,7 @@ static InputManager buttons;
 // FreeInkDisplay's public API only pushes pre-formed image data (drawImage)
 // or clears the whole buffer (clearScreen) — it has no shape/text primitives
 // (those live in FreeInkUI, a full UI layer this firmware intentionally
-// doesn't pull in). So the test pattern is drawn straight into the raw 1bpp
+// doesn't pull in). So everything below is drawn straight into the raw 1bpp
 // framebuffer: 0 = black, 1 = white (matches clearScreen's 0xFF-is-white
 // default and the SDK's icon-format convention), MSB-first, row-major.
 // ---------------------------------------------------------------------------
@@ -60,9 +65,9 @@ static void drawLine(int x0, int y0, int x1, int y1, bool black) {
   }
 }
 
-// Tiny 5x7 bitmap font — only the glyphs this firmware's two debug labels
-// need ("XTEINK X4" / "800X480"). Each row is a 5-bit pattern, MSB (bit 4) =
-// leftmost column.
+// 5x7 bitmap font — uppercase letters + digits + space + colon, covering
+// every string this firmware draws (menu labels, test screens, button
+// names). Each row is a 5-bit pattern, MSB (bit 4) = leftmost column.
 struct Glyph {
   char c;
   uint8_t rows[7];
@@ -70,14 +75,37 @@ struct Glyph {
 
 static const Glyph kFont[] = {
     {' ', {0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000}},
+    {':', {0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000}},
     {'0', {0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110}},
+    {'1', {0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}},
+    {'2', {0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111}},
+    {'3', {0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110}},
     {'4', {0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010}},
+    {'5', {0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110}},
+    {'6', {0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110}},
+    {'7', {0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000}},
     {'8', {0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110}},
+    {'9', {0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100}},
+    {'A', {0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001}},
+    {'B', {0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110}},
+    {'C', {0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111}},
+    {'D', {0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100}},
     {'E', {0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111}},
+    {'F', {0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000}},
+    {'G', {0b01111, 0b10000, 0b10000, 0b10011, 0b10001, 0b10001, 0b01111}},
+    {'H', {0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001}},
     {'I', {0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111}},
     {'K', {0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001}},
+    {'L', {0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111}},
+    {'M', {0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001}},
     {'N', {0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001}},
+    {'O', {0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}},
+    {'P', {0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000}},
+    {'R', {0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001}},
+    {'S', {0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110}},
     {'T', {0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100}},
+    {'U', {0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}},
+    {'W', {0b10001, 0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010}},
     {'X', {0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001}},
 };
 
@@ -89,7 +117,7 @@ static const Glyph& findGlyph(char c) {
 }
 
 static void drawChar(int x, int y, char c, uint8_t scale) {
-  const Glyph& g = findGlyph(c);
+  const Glyph& g = findGlyph(static_cast<char>(toupper(static_cast<unsigned char>(c))));
   for (uint8_t row = 0; row < 7; row++) {
     for (uint8_t col = 0; col < 5; col++) {
       if (!(g.rows[row] & (0x10 >> col))) continue;
@@ -108,6 +136,12 @@ static void drawText(int x, int y, const char* s, uint8_t scale) {
     drawChar(cx, y, *s, scale);
     cx += 6 * scale;  // 5px glyph + 1px space, scaled
   }
+}
+
+static void drawNumber(int x, int y, int value, uint8_t scale) {
+  char buf[6];
+  snprintf(buf, sizeof(buf), "%d", value);
+  drawText(x, y, buf, scale);
 }
 
 static void dumpBoardConfig() {
@@ -201,6 +235,323 @@ static void drawTestPattern() {
   drawText(w / 2 - 70, h / 2 + 10, "800X480", 3);
 }
 
+static void drawCheckerboard(int cell) {
+  uint16_t w = display->getDisplayWidth();
+  uint16_t h = display->getDisplayHeight();
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      setPixel(x, y, ((x / cell) + (y / cell)) % 2 == 0);
+    }
+  }
+}
+
+static void waitForAnyButtonPress() {
+  for (;;) {
+    buttons.update();
+    for (uint8_t i = InputManager::BTN_BACK; i <= InputManager::BTN_POWER; i++) {
+      if (buttons.wasPressed(i)) return;
+    }
+    delay(10);
+  }
+}
+
+// --- One-shot test screens (draw + refresh, log timing, wait for a press) --
+
+static void runPatternTest() {
+  Serial.println();
+  Serial.println("=== TEST: Pattern (border/corners/diagonal/text) ===");
+  drawTestPattern();
+  uint32_t t0 = millis();
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+  uint32_t t1 = millis();
+  Serial.printf("  FULL_REFRESH: %lu ms\n", static_cast<unsigned long>(t1 - t0));
+  Serial.println("=== TEST complete: press any button to return to menu ===");
+  waitForAnyButtonPress();
+}
+
+static void runCheckerboardTest() {
+  Serial.println();
+  Serial.println("=== TEST: Checkerboard (ghosting/moire check) ===");
+  drawCheckerboard(20);
+  uint32_t t0 = millis();
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+  uint32_t t1 = millis();
+  Serial.printf("  FULL_REFRESH: %lu ms\n", static_cast<unsigned long>(t1 - t0));
+  Serial.println("=== TEST complete: press any button to return to menu ===");
+  waitForAnyButtonPress();
+}
+
+static void runRefreshCompareTest() {
+  Serial.println();
+  Serial.println("=== TEST: Refresh mode comparison (FULL/HALF/FAST) ===");
+  drawCheckerboard(40);
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+
+  struct ModeInfo {
+    EInkDisplay::RefreshMode mode;
+    const char* name;
+  };
+  const ModeInfo modes[] = {
+      {EInkDisplay::FULL_REFRESH, "FULL"},
+      {EInkDisplay::HALF_REFRESH, "HALF"},
+      {EInkDisplay::FAST_REFRESH, "FAST"},
+  };
+  bool black = true;
+  for (const auto& m : modes) {
+    black = !black;
+    display->clearScreen(black ? 0x00 : 0xFF);
+    uint32_t t0 = millis();
+    display->displayBuffer(m.mode);
+    uint32_t t1 = millis();
+    Serial.printf("  %-4s refresh: %lu ms\n", m.name, static_cast<unsigned long>(t1 - t0));
+    delay(500);
+  }
+  Serial.println("=== TEST complete: press any button to return to menu ===");
+
+  display->clearScreen(0xFF);
+  drawText(40, 60, "REFRESH TEST DONE", 3);
+  drawText(40, 110, "SEE SERIAL LOG", 3);
+  drawText(40, 200, "PRESS BUTTON", 3);
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+  waitForAnyButtonPress();
+}
+
+static void runPartialWindowTest() {
+  Serial.println();
+  Serial.println("=== TEST: Partial window update (displayWindow) ===");
+  uint16_t w = display->getDisplayWidth();
+  uint16_t h = display->getDisplayHeight();
+
+  display->clearScreen(0xFF);
+  drawText(40, 40, "PARTIAL WINDOW TEST", 3);
+  uint32_t t0 = millis();
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+  uint32_t t1 = millis();
+  Serial.printf("  base FULL_REFRESH: %lu ms\n", static_cast<unsigned long>(t1 - t0));
+
+  // Toggle a centered box a few times using displayWindow() only, so a
+  // failure specific to the windowed-update path (vs. full-frame refresh)
+  // is isolated.
+  uint16_t boxW = 200, boxH = 200;
+  uint16_t boxX = (w - boxW) / 2;
+  uint16_t boxY = (h - boxH) / 2;
+  for (int i = 0; i < 3; i++) {
+    bool black = (i % 2) == 0;
+    for (int y = boxY; y < boxY + boxH; y++) {
+      for (int x = boxX; x < boxX + boxW; x++) {
+        setPixel(x, y, black);
+      }
+    }
+    uint32_t wt0 = millis();
+    display->displayWindow(boxX, boxY, boxW, boxH);
+    uint32_t wt1 = millis();
+    Serial.printf("  displayWindow() pass %d: %lu ms\n", i, static_cast<unsigned long>(wt1 - wt0));
+    delay(500);
+  }
+  Serial.println("=== TEST complete: press any button to return to menu ===");
+  waitForAnyButtonPress();
+}
+
+// --- Continuous test screens (own loop, BACK exits) -------------------------
+
+static void drawButtonLiveScreen(const InputManager::ButtonAdcSample& g1, const InputManager::ButtonAdcSample& g2,
+                                  bool powerPressed, const char* lastEvent) {
+  display->clearScreen(0xFF);
+  int y = 30;
+  drawText(40, y, "BUTTON TEST", 3);
+  y += 60;
+
+  drawText(40, y, "G1:", 3);
+  drawNumber(140, y, g1.raw, 3);
+  drawText(260, y, g1.button >= 0 ? InputManager::getButtonName(g1.button) : "NONE", 3);
+  y += 40;
+
+  drawText(40, y, "G2:", 3);
+  drawNumber(140, y, g2.raw, 3);
+  drawText(260, y, g2.button >= 0 ? InputManager::getButtonName(g2.button) : "NONE", 3);
+  y += 40;
+
+  drawText(40, y, powerPressed ? "PWR:ON" : "PWR:OFF", 3);
+  y += 60;
+
+  drawText(40, y, "LAST:", 3);
+  drawText(160, y, lastEvent, 3);
+  y += 80;
+
+  drawText(40, y, "BACK TO EXIT", 3);
+}
+
+static void runButtonLiveTest() {
+  Serial.println();
+  Serial.println("=== TEST: Live button/ADC readout (BACK to exit) ===");
+
+  char lastEvent[24] = "NONE";
+  InputManager::ButtonAdcSample g1, g2;
+  buttons.readButtonAdc(g1, g2);
+  drawButtonLiveScreen(g1, g2, buttons.isPressed(InputManager::BTN_POWER), lastEvent);
+  display->displayBuffer(EInkDisplay::FULL_REFRESH);
+
+  uint32_t lastRedrawMs = millis();
+  for (;;) {
+    buttons.update();
+
+    bool anyEdge = false;
+    for (uint8_t i = InputManager::BTN_BACK; i <= InputManager::BTN_POWER; i++) {
+      if (buttons.wasPressed(i)) {
+        Serial.printf("[BTN] PRESS   %s\n", InputManager::getButtonName(i));
+        logButtonSnapshot("->");
+        snprintf(lastEvent, sizeof(lastEvent), "%s PRESS", InputManager::getButtonName(i));
+        anyEdge = true;
+      }
+      if (buttons.wasReleased(i)) {
+        Serial.printf("[BTN] RELEASE %s (held %lums)\n", InputManager::getButtonName(i),
+                      static_cast<unsigned long>(buttons.getHeldTime()));
+        logButtonSnapshot("->");
+        snprintf(lastEvent, sizeof(lastEvent), "%s RELEASE", InputManager::getButtonName(i));
+        anyEdge = true;
+      }
+    }
+
+    if (buttons.wasPressed(InputManager::BTN_BACK)) {
+      Serial.println("=== TEST complete: back to menu ===");
+      return;
+    }
+
+    uint32_t now = millis();
+    if (anyEdge || now - lastRedrawMs >= 2000) {
+      buttons.readButtonAdc(g1, g2);
+      drawButtonLiveScreen(g1, g2, buttons.isPressed(InputManager::BTN_POWER), lastEvent);
+      display->displayBuffer(EInkDisplay::FAST_REFRESH);
+      lastRedrawMs = now;
+    }
+
+    delay(10);
+  }
+}
+
+static void runFlashStressTest() {
+  Serial.println();
+  Serial.println("=== TEST: Continuous black/white flash stress (BACK to exit) ===");
+
+  bool black = false;
+  bool first = true;
+  uint32_t lastToggleMs = 0;
+
+  for (;;) {
+    buttons.update();
+    if (buttons.wasPressed(InputManager::BTN_BACK)) {
+      Serial.println("=== TEST complete: back to menu ===");
+      return;
+    }
+
+    uint32_t now = millis();
+    if (first || now - lastToggleMs >= 5000) {
+      first = false;
+      lastToggleMs = now;
+      black = !black;
+
+      int busyPin = ACTIVE.display.busy;
+      Serial.println();
+      Serial.printf("[FLASH] Refreshing to %s\n", black ? "BLACK" : "WHITE");
+      Serial.printf("[FLASH] BUSY pin (GPIO%d) before refresh : %d\n", busyPin, digitalRead(busyPin));
+
+      display->clearScreen(black ? 0x00 : 0xFF);
+      uint32_t t0 = millis();
+      display->displayBuffer(EInkDisplay::FULL_REFRESH);
+      uint32_t t1 = millis();
+
+      Serial.printf("[FLASH] BUSY pin (GPIO%d) after refresh  : %d\n", busyPin, digitalRead(busyPin));
+      Serial.printf("[FLASH] Refresh duration                 : %lu ms\n", static_cast<unsigned long>(t1 - t0));
+    }
+
+    delay(10);
+  }
+}
+
+// --- Menu --------------------------------------------------------------------
+
+static const char* kMenuLabels[] = {"PATTERN", "CHECKER", "REFRESH", "PARTIAL", "BUTTONS", "FLASH"};
+static constexpr uint8_t kMenuCount = sizeof(kMenuLabels) / sizeof(kMenuLabels[0]);
+static uint8_t menuSelected = 0;
+
+static void drawMenu(uint8_t selected) {
+  display->clearScreen(0xFF);
+  drawText(40, 20, "TEST MENU", 3);
+
+  int y = 90;
+  for (uint8_t i = 0; i < kMenuCount; i++) {
+    if (i == selected) {
+      // Filled cursor triangle to the left of the selected label.
+      for (int dx = 0; dx < 10; dx++) {
+        for (int dy = -dx; dy <= dx; dy++) {
+          setPixel(50 + dx, y + 8 + dy, true);
+        }
+      }
+    }
+    drawText(80, y, kMenuLabels[i], 3);
+    y += 50;
+  }
+
+  drawText(40, y + 20, "UP DOWN SELECT", 3);
+  drawText(40, y + 60, "CONFIRM RUN", 3);
+}
+
+static void runSelectedTest(uint8_t index) {
+  switch (index) {
+    case 0:
+      runPatternTest();
+      break;
+    case 1:
+      runCheckerboardTest();
+      break;
+    case 2:
+      runRefreshCompareTest();
+      break;
+    case 3:
+      runPartialWindowTest();
+      break;
+    case 4:
+      runButtonLiveTest();
+      break;
+    case 5:
+      runFlashStressTest();
+      break;
+    default:
+      break;
+  }
+}
+
+// --- Global (always-on) button activity logging -----------------------------
+// Runs every loop() iteration regardless of menu/test state so hardware
+// button issues are visible on serial even while just sitting in the menu.
+
+static bool logButtonEdges() {
+  bool anyEdge = false;
+  for (uint8_t i = InputManager::BTN_BACK; i <= InputManager::BTN_POWER; i++) {
+    if (buttons.wasPressed(i)) {
+      Serial.printf("[BTN] PRESS   %s\n", InputManager::getButtonName(i));
+      logButtonSnapshot("->");
+      anyEdge = true;
+    }
+    if (buttons.wasReleased(i)) {
+      Serial.printf("[BTN] RELEASE %s (held %lums)\n", InputManager::getButtonName(i),
+                    static_cast<unsigned long>(buttons.getHeldTime()));
+      logButtonSnapshot("->");
+      anyEdge = true;
+    }
+  }
+  return anyEdge;
+}
+
+static void logButtonHeartbeatIfIdle(bool anyEdge) {
+  static uint32_t lastHeartbeatMs = 0;
+  uint32_t now = millis();
+  if (!anyEdge && now - lastHeartbeatMs >= 2000) {
+    logButtonSnapshot("idle");
+    lastHeartbeatMs = now;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   uint32_t serialWaitStart = millis();
@@ -235,67 +586,29 @@ void setup() {
   uint32_t t1 = millis();
   Serial.printf("Initial FULL_REFRESH took %lu ms\n", static_cast<unsigned long>(t1 - t0));
 
-  Serial.println("### Setup complete: black/white toggle every 5s + live button test ###");
-}
-
-static void pollButtons() {
-  static uint32_t lastHeartbeatMs = 0;
-  uint32_t now = millis();
-
-  buttons.update();
-
-  bool anyEdge = false;
-  for (uint8_t i = InputManager::BTN_BACK; i <= InputManager::BTN_POWER; i++) {
-    if (buttons.wasPressed(i)) {
-      Serial.printf("[BTN] PRESS   %s\n", InputManager::getButtonName(i));
-      logButtonSnapshot("->");
-      anyEdge = true;
-    }
-    if (buttons.wasReleased(i)) {
-      Serial.printf("[BTN] RELEASE %s (held %lums)\n", InputManager::getButtonName(i),
-                    static_cast<unsigned long>(buttons.getHeldTime()));
-      logButtonSnapshot("->");
-      anyEdge = true;
-    }
-  }
-
-  // Idle heartbeat so a drifted/noisy divider is visible on the raw ADC
-  // values even when no press ever lands in a recognized band.
-  if (!anyEdge && now - lastHeartbeatMs >= 2000) {
-    logButtonSnapshot("idle");
-    lastHeartbeatMs = now;
-  }
-}
-
-static void toggleDisplay() {
-  static bool black = false;
-  black = !black;
-
-  int busyPin = ACTIVE.display.busy;
-
-  Serial.println();
-  Serial.printf("[LOOP] Refreshing to %s\n", black ? "BLACK" : "WHITE");
-  Serial.printf("[LOOP] BUSY pin (GPIO%d) before refresh : %d\n", busyPin, digitalRead(busyPin));
-
-  display->clearScreen(black ? 0x00 : 0xFF);
-
-  uint32_t t0 = millis();
+  Serial.println("### Setup complete: entering test menu (UP/DOWN/CONFIRM) ###");
+  drawMenu(menuSelected);
   display->displayBuffer(EInkDisplay::FULL_REFRESH);
-  uint32_t t1 = millis();
-
-  Serial.printf("[LOOP] BUSY pin (GPIO%d) after refresh  : %d\n", busyPin, digitalRead(busyPin));
-  Serial.printf("[LOOP] Refresh duration                 : %lu ms\n", static_cast<unsigned long>(t1 - t0));
 }
 
 void loop() {
-  static uint32_t lastToggleMs = 0;
-  uint32_t now = millis();
+  buttons.update();
 
-  pollButtons();
+  bool anyEdge = logButtonEdges();
+  logButtonHeartbeatIfIdle(anyEdge);
 
-  if (now - lastToggleMs >= 5000) {
-    lastToggleMs = now;
-    toggleDisplay();
+  if (buttons.wasPressed(InputManager::BTN_UP)) {
+    menuSelected = (menuSelected == 0) ? (kMenuCount - 1) : (menuSelected - 1);
+    drawMenu(menuSelected);
+    display->displayBuffer(EInkDisplay::FAST_REFRESH);
+  } else if (buttons.wasPressed(InputManager::BTN_DOWN)) {
+    menuSelected = (menuSelected + 1) % kMenuCount;
+    drawMenu(menuSelected);
+    display->displayBuffer(EInkDisplay::FAST_REFRESH);
+  } else if (buttons.wasPressed(InputManager::BTN_CONFIRM)) {
+    runSelectedTest(menuSelected);
+    drawMenu(menuSelected);
+    display->displayBuffer(EInkDisplay::FULL_REFRESH);
   }
 
   delay(10);
