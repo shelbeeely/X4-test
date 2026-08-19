@@ -49,6 +49,23 @@
   #monitor-controls button:disabled { color: #999; cursor: default; }
   #connect-btn { background: #1a73e8; color: white; border-color: #1a73e8; }
   #connect-btn:disabled { background: #eee; color: #999; border-color: #ccc; }
+  #auto-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1rem 0 0.5rem;
+  }
+  #auto-controls button {
+    font-size: 0.95rem;
+    padding: 0.5em 1.1em;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+  }
+  #auto-controls button:disabled { color: #999; cursor: default; }
+  #auto-enable { background: #1a73e8; color: white; border-color: #1a73e8; }
+  #auto-enable:disabled { background: #eee; color: #999; border-color: #ccc; }
+  #auto-status { font-size: 0.85rem; color: #666; margin: 0.4rem 0; min-height: 1.2em; }
   #monitor-output {
     background: #0b0f14;
     color: #d3f9d8;
@@ -161,6 +178,27 @@
     </span>
   </esp-web-install-button>
 
+  <p>
+    <strong>Auto-flash:</strong> grant access once and leave this tab open
+    &mdash; it checks for a newer build about once a minute and reflashes on
+    its own the moment one lands, no further clicks. It reuses whatever
+    WebSerial permission you've already granted (here or in the monitor
+    below); if none exists yet, enabling it prompts you for the port once.
+  </p>
+  <div id="auto-controls">
+    <button id="auto-enable">Enable auto-flash</button>
+    <button id="auto-disable" disabled>Disable auto-flash</button>
+  </div>
+  <div id="auto-status">Auto-flash is off.</div>
+  <p class="note">
+    This tab has to stay open (and the computer awake) to keep checking and
+    flashing &mdash; there's no background service. If the board's USB
+    identity changes between normal operation and the bootloader it drops
+    into mid-flash, the browser may ask you to re-pick the port on the next
+    cycle instead of reconnecting silently; that's a Chrome/WebSerial
+    behavior this page can't control, not a bug here.
+  </p>
+
   <h2>2. Watch the debug output</h2>
   <p>
     Opens a live 115200-baud console right in this page. Works whether you
@@ -266,6 +304,7 @@
       }
 
       var port = null;
+      var lastPort = null;  // kept after disconnect so auto-flash can reopen it with no new prompt
       var reader = null;
       var keepReading = false;
 
@@ -292,18 +331,21 @@
         });
       }
 
-      function connect() {
-        navigator.serial.requestPort().then(function (p) {
-          port = p;
-          return port.open({ baudRate: 115200 });
-        }).then(function () {
+      function openPort(p) {
+        port = p;
+        lastPort = p;
+        return port.open({ baudRate: 115200 }).then(function () {
           keepReading = true;
           connectBtn.disabled = true;
           disconnectBtn.disabled = false;
           appendLine('--- connected ---\n');
           port.addEventListener('disconnect', disconnect);
           readLoop();
-        }).catch(function (err) {
+        });
+      }
+
+      function connect() {
+        navigator.serial.requestPort().then(openPort).catch(function (err) {
           appendLine('[connection failed: ' + err.message + ']\n');
         });
       }
@@ -311,7 +353,7 @@
       function disconnect() {
         keepReading = false;
         var cancelled = reader ? reader.cancel().catch(function () {}) : Promise.resolve();
-        cancelled.then(function () {
+        return cancelled.then(function () {
           return port ? port.close().catch(function () {}) : Promise.resolve();
         }).then(function () {
           port = null;
@@ -327,6 +369,226 @@
       clearBtn.addEventListener('click', function () {
         output.textContent = '';
       });
+
+      // Exposed for the auto-flash script: it disconnects the monitor
+      // before flashing (WebSerial only allows one open reader/writer per
+      // port) and reconnects afterward using the same already-authorized
+      // port, no new picker prompt.
+      window.xteinkMonitor = {
+        isConnected: function () { return !!port; },
+        disconnect: disconnect,
+        reconnect: function () {
+          if (!lastPort) return Promise.resolve(false);
+          return openPort(lastPort).then(function () { return true; });
+        }
+      };
+    })();
+  </script>
+
+  <script>
+    (function () {
+      var STORAGE_ENABLED = 'xteink_x4_autoflash_enabled';
+      var STORAGE_LAST_VERSION = 'xteink_x4_autoflash_last_version';
+      var STORAGE_DEVICE_INFO = 'xteink_x4_autoflash_device';
+      var POLL_MS = 60000;
+      var ESPTOOL_JS_URL = 'https://unpkg.com/esptool-js@0.6.1/lib/index.js';
+
+      var enableBtn = document.getElementById('auto-enable');
+      var disableBtn = document.getElementById('auto-disable');
+      var statusEl = document.getElementById('auto-status');
+
+      if (!('serial' in navigator)) {
+        enableBtn.disabled = true;
+        statusEl.textContent = "This browser doesn't support Web Serial.";
+        return;
+      }
+
+      var pollTimer = null;
+      var flashing = false;
+
+      function setStatus(text) { statusEl.textContent = text; }
+
+      function loadDeviceInfo() {
+        try { return JSON.parse(localStorage.getItem(STORAGE_DEVICE_INFO) || 'null'); } catch (e) { return null; }
+      }
+      function saveDeviceInfo(info) {
+        localStorage.setItem(STORAGE_DEVICE_INFO,
+          JSON.stringify({ usbVendorId: info.usbVendorId, usbProductId: info.usbProductId }));
+      }
+
+      // Gesture-free: only looks at ports this origin already has a grant
+      // for (navigator.serial.getPorts() never prompts). Prefers a match on
+      // the vendor/product ID we saved from the last successful grant;
+      // falls back to "the only port available" when nothing's saved yet.
+      function findAuthorizedPort() {
+        return navigator.serial.getPorts().then(function (ports) {
+          if (ports.length === 0) return null;
+          var saved = loadDeviceInfo();
+          if (saved) {
+            var match = ports.filter(function (p) {
+              var info = p.getInfo();
+              return info.usbVendorId === saved.usbVendorId && info.usbProductId === saved.usbProductId;
+            })[0];
+            if (match) return match;
+          }
+          return ports.length === 1 ? ports[0] : null;
+        });
+      }
+
+      // Must be invoked directly from a click handler with no awaited work
+      // first (requestPort() needs a live user gesture): reuses a granted
+      // port if one already exists, otherwise shows the one-time picker.
+      function acquirePortWithPrompt() {
+        return findAuthorizedPort().then(function (p) {
+          if (p) return p;
+          return navigator.serial.requestPort().then(function (p) {
+            saveDeviceInfo(p.getInfo());
+            return p;
+          });
+        });
+      }
+
+      function fetchManifestVersion() {
+        return fetch('firmware/manifest.json', { cache: 'no-store' })
+          .then(function (res) { return res.json(); })
+          .then(function (data) { return data.version; });
+      }
+
+      function fetchFirmwareBytes() {
+        return fetch('firmware/firmware.merged.bin', { cache: 'no-store' })
+          .then(function (res) { return res.arrayBuffer(); })
+          .then(function (buf) { return new Uint8Array(buf); });
+      }
+
+      function flashFirmware(port, bytes) {
+        return import(ESPTOOL_JS_URL).then(function (mod) {
+          var transport = new mod.Transport(port, true);
+          var loader = new mod.ESPLoader({ transport: transport, baudrate: 921600 });
+          return loader.main().then(function () {
+            return loader.writeFlash({
+              fileArray: [{ data: bytes, address: 0 }],
+              // "keep" leaves flash_mode/freq/size exactly as CI's esptool
+              // merge_bin step already baked into the image header, instead
+              // of this page guessing at (and possibly getting wrong) the
+              // board's actual flash frequency.
+              flashMode: 'keep',
+              flashFreq: 'keep',
+              flashSize: 'keep',
+              eraseAll: false,
+              compress: true,
+              reportProgress: function (fileIndex, written, total) {
+                setStatus('Flashing... ' + Math.round((written / total) * 100) + '%');
+              }
+            });
+          }).then(function () {
+            return loader.after();  // defaults to a hard reset
+          }).then(function () {
+            return transport.disconnect();
+          });
+        });
+      }
+
+      // portPromise resolves to a SerialPort, or to null if none is
+      // available (only the initial enable() click may prompt for one; a
+      // poll-triggered cycle never does, since there's no user gesture to
+      // spend in a timer callback).
+      function runFlashCycle(reason, portPromise) {
+        if (flashing) return Promise.resolve();
+        flashing = true;
+        var wasMonitorConnected = window.xteinkMonitor && window.xteinkMonitor.isConnected();
+        setStatus('Flashing (' + reason + ')...');
+
+        return Promise.resolve().then(function () {
+          return wasMonitorConnected ? window.xteinkMonitor.disconnect() : null;
+        }).then(function () {
+          return portPromise;
+        }).then(function (port) {
+          if (!port) throw new Error('no authorized serial port — click Enable auto-flash to re-pick it');
+          return fetchFirmwareBytes().then(function (bytes) { return flashFirmware(port, bytes); });
+        }).then(function () {
+          return fetchManifestVersion();
+        }).then(function (version) {
+          localStorage.setItem(STORAGE_LAST_VERSION, version);
+          setStatus('Flashed build ' + version + ' at ' + new Date().toLocaleTimeString() + ' — waiting for reboot...');
+          // Give the board a few seconds to reboot and re-enumerate its
+          // native USB CDC before trying to reconnect the monitor.
+          return new Promise(function (resolve) { setTimeout(resolve, 4000); });
+        }).then(function () {
+          if (!wasMonitorConnected || !window.xteinkMonitor) {
+            setStatus('Reflashed. Click Connect above to watch the new boot log.');
+            return;
+          }
+          return window.xteinkMonitor.reconnect().then(function (ok) {
+            setStatus(ok ? 'Reflashed and reconnected the monitor.'
+                          : 'Reflashed. Click Connect above to watch the new boot log.');
+          });
+        }).catch(function (err) {
+          setStatus('Auto-flash failed: ' + err.message);
+          stopPolling();
+          localStorage.setItem(STORAGE_ENABLED, 'false');
+          enableBtn.disabled = false;
+          disableBtn.disabled = true;
+        }).finally(function () {
+          flashing = false;
+        });
+      }
+
+      function checkForNewBuild() {
+        fetchManifestVersion().then(function (version) {
+          if (version !== localStorage.getItem(STORAGE_LAST_VERSION)) {
+            runFlashCycle('new build ' + version, findAuthorizedPort());
+          } else {
+            setStatus('Auto-flash on. Up to date (build ' + version + '). Next check in ~60s.');
+          }
+        }).catch(function (err) {
+          setStatus('Auto-flash on. Could not check for a new build: ' + err.message);
+        });
+      }
+
+      function startPolling() {
+        if (!pollTimer) pollTimer = setInterval(checkForNewBuild, POLL_MS);
+      }
+      function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
+
+      function enable() {
+        enableBtn.disabled = true;
+        disableBtn.disabled = false;
+        setStatus('Requesting device access...');
+        var portPromise = acquirePortWithPrompt();
+        portPromise.then(function () { localStorage.setItem(STORAGE_ENABLED, 'true'); });
+        runFlashCycle('enabling', portPromise).then(startPolling);
+      }
+
+      function disable() {
+        stopPolling();
+        localStorage.setItem(STORAGE_ENABLED, 'false');
+        enableBtn.disabled = false;
+        disableBtn.disabled = true;
+        setStatus('Auto-flash is off.');
+      }
+
+      enableBtn.addEventListener('click', enable);
+      disableBtn.addEventListener('click', disable);
+
+      // Resume automatically on reload if it was left on and we still hold
+      // a usable port grant (checked with the gesture-free getPorts() path)
+      // — otherwise leave it off and let the user click Enable to
+      // re-authorize, since a picker can't be shown without a fresh click.
+      if (localStorage.getItem(STORAGE_ENABLED) === 'true') {
+        findAuthorizedPort().then(function (p) {
+          if (p) {
+            enableBtn.disabled = true;
+            disableBtn.disabled = false;
+            setStatus('Resuming auto-flash...');
+            runFlashCycle('resuming', Promise.resolve(p)).then(startPolling);
+          } else {
+            localStorage.setItem(STORAGE_ENABLED, 'false');
+            setStatus('Auto-flash was on, but the port grant is gone — click Enable auto-flash to re-authorize.');
+          }
+        });
+      }
     })();
   </script>
 

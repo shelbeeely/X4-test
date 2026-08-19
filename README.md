@@ -51,7 +51,7 @@ monitor from Chrome over WebSerial.
 ## Flashing and monitoring from the GitHub Pages site (easiest)
 
 Every push builds the firmware and deploys a page to
-**https://shelbeeely.github.io/X4-test/** with four independent tools, all
+**https://shelbeeely.github.io/X4-test/** with five independent tools, all
 over WebSerial, the camera API, or client-side API calls — no drivers or
 command line:
 
@@ -59,6 +59,13 @@ command line:
   [ESP Web Tools](https://esphome.github.io/esp-web-tools/), the same widget
   behind ESPHome Web) that always flashes whatever the latest successful
   build produced. Nothing to download or unzip.
+- **Auto-flash** — grant WebSerial access once and leave the tab open: it
+  polls the deployed manifest roughly every 60s and reflashes automatically
+  the moment a new build lands, reusing the already-granted port (no picker
+  on every cycle). Built on `esptool-js` directly rather than the install
+  button, so it can run unattended. It also disconnects/reconnects the
+  serial monitor around each flash automatically, since WebSerial only
+  allows one open connection to a port at a time.
 - **Serial monitor** — a live 115200-baud console built directly into the
   page (plain Web Serial API, independent of the flash button), so you can
   watch the debug output — display refresh logging and `[BTN]` button
@@ -80,17 +87,27 @@ On a Chromebook or any Chrome/Edge browser:
 
 1. Plug the X4 in over USB.
 2. Open the Pages URL above.
-3. Under **1. Flash**, click **Connect & Flash**, pick the serial port, and
-   confirm.
+3. Under **1. Flash**, either click **Connect & Flash** once for a manual
+   flash, or click **Enable auto-flash** to grant access once and have the
+   tab reflash on its own every time a new build lands (see the note on the
+   page about it needing to stay open, and about the one Chrome/WebSerial
+   behavior — re-enumeration across a reset — this page can't fully control).
 4. Under **2. Watch the debug output**, click **Connect** (a separate port
    request — close the flash dialog first if it's still open), then reset
-   the board to see the full boot log.
+   the board to see the full boot log. It reconnects itself automatically
+   after an auto-flash cycle.
 5. Under **3. Show the AI a photo of the panel**, click **Enable camera**,
    point it at the X4's screen, and **Capture photo** (optional — skip this
    step for a log-only analysis).
 6. Under **4. Ask an AI about the log (and photo)**, save your OpenRouter
    key once, then click **Analyze log with AI** any time you want a read on
    what the console (and panel, if captured) is showing.
+
+With auto-flash on, the practical loop becomes: push a fix here → CI builds
+it → the open tab reflashes the board within about a minute and the monitor
+reconnects on its own → capture a photo and/or click Analyze whenever you
+want a fresh read, and paste anything interesting back into the chat with
+Claude for the next fix.
 
 > **One-time repo setup:** GitHub Pages must be enabled once before the
 > `Deploy to GitHub Pages` step in the workflow will succeed: go to
