@@ -147,6 +147,32 @@
     display: block;
   }
   #cam-status { font-size: 0.85rem; color: #666; margin: 0.4rem 0; min-height: 1.2em; }
+  #gh-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    flex-wrap: wrap;
+  }
+  #gh-controls input {
+    flex: 1;
+    min-width: 12rem;
+    padding: 0.5em 0.7em;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+  }
+  #gh-controls button {
+    font-size: 0.95rem;
+    padding: 0.5em 1.1em;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+    background: #fff;
+    cursor: pointer;
+  }
+  #gh-file-issue { background: #1a73e8; color: white; border-color: #1a73e8; }
+  #gh-file-issue:disabled { background: #eee; color: #999; border-color: #ccc; cursor: default; }
+  #gh-status { font-size: 0.85rem; color: #666; margin: 0.4rem 0; min-height: 1.2em; }
   footer { margin-top: 3rem; font-size: 0.9rem; color: #666; }
 </style>
 </head>
@@ -281,6 +307,44 @@
   </div>
   <div id="ai-status">Sends up to the last ~8000 characters of the console above, plus the captured photo if you took one (the default model supports images; if you switch models, pick one that does too when sending a photo).</div>
   <pre id="ai-output"></pre>
+
+  <h2>5. Send this diagnosis to Claude Code</h2>
+  <p>
+    Files a GitHub issue containing the AI's analysis above, tagged
+    <code>@claude</code>. A repo workflow
+    (<code>.github/workflows/claude-debug-fix.yml</code>) picks it up and
+    runs <a href="https://github.com/anthropics/claude-code-action">Claude
+    Code</a> with real repository access &mdash; reading freeink-sdk,
+    editing <code>src/main.cpp</code>, and pushing a fix &mdash; so the loop
+    closes on its own: file the issue, CI builds the fix, and this tab's
+    auto-flash above reflashes the board automatically.
+  </p>
+  <p class="note">
+    <strong>One-time repo setup (not something this page can do):</strong>
+    install the <a href="https://github.com/apps/claude">Claude GitHub
+    App</a> and add an <code>ANTHROPIC_API_KEY</code> (or
+    <code>CLAUDE_CODE_OAUTH_TOKEN</code>) secret under this repo's
+    Settings &rarr; Secrets and variables &rarr; Actions. Until that's done,
+    filing an issue here won't do anything.
+  </p>
+  <p class="note">
+    Use a <strong>fine-grained</strong> GitHub personal access token (
+    <a href="https://github.com/settings/personal-access-tokens/new">create
+    one</a>), scoped to <em>only</em> this repository with
+    <strong>Issues: Read and write</strong> permission and nothing else
+    &mdash; it can file and comment on issues, not push code or read
+    anything private. Stored only in this browser's <code>localStorage</code>,
+    sent straight to the GitHub API.
+  </p>
+  <div id="gh-controls">
+    <input id="gh-token" type="password" placeholder="Fine-grained GitHub token (github_pat_...)" autocomplete="off">
+    <button id="gh-save-token">Save token</button>
+    <button id="gh-clear-token">Clear token</button>
+  </div>
+  <div id="gh-controls">
+    <button id="gh-file-issue">File issue for Claude Code</button>
+  </div>
+  <div id="gh-status">Run "Analyze log with AI" above first — this sends that result.</div>
 
   <footer>
     Built automatically on every push by
@@ -789,6 +853,95 @@
           statusEl.textContent = 'Request failed: ' + err.message;
         }).finally(function () {
           analyzeBtn.disabled = false;
+        });
+      });
+    })();
+  </script>
+
+  <script>
+    (function () {
+      var GH_STORAGE_KEY = 'xteink_x4_github_token';
+      var REPO = 'shelbeeely/X4-test';
+
+      var tokenInput = document.getElementById('gh-token');
+      var saveTokenBtn = document.getElementById('gh-save-token');
+      var clearTokenBtn = document.getElementById('gh-clear-token');
+      var fileIssueBtn = document.getElementById('gh-file-issue');
+      var statusEl = document.getElementById('gh-status');
+
+      var savedToken = localStorage.getItem(GH_STORAGE_KEY);
+      if (savedToken) {
+        tokenInput.value = savedToken;
+        statusEl.textContent = 'Using saved token. Run "Analyze log with AI" above first — this sends that result.';
+      }
+
+      saveTokenBtn.addEventListener('click', function () {
+        var token = tokenInput.value.trim();
+        if (!token) { statusEl.textContent = 'Enter a token first.'; return; }
+        localStorage.setItem(GH_STORAGE_KEY, token);
+        statusEl.textContent = 'Token saved in this browser.';
+      });
+
+      clearTokenBtn.addEventListener('click', function () {
+        localStorage.removeItem(GH_STORAGE_KEY);
+        tokenInput.value = '';
+        statusEl.textContent = 'Token cleared.';
+      });
+
+      fileIssueBtn.addEventListener('click', function () {
+        var token = localStorage.getItem(GH_STORAGE_KEY) || tokenInput.value.trim();
+        if (!token) { statusEl.textContent = 'Save a GitHub token first.'; return; }
+
+        var analysis = document.getElementById('ai-output').textContent.trim();
+        if (!analysis) { statusEl.textContent = 'No AI analysis yet — click "Analyze log with AI" above first.'; return; }
+
+        var log = document.getElementById('monitor-output').textContent.trim();
+        var body = [
+          '@claude The debug console AI assistant flagged the following on the Xteink X4.',
+          'Please investigate against src/main.cpp and freeink-sdk, fix the firmware if',
+          "there's a real issue, and push. If nothing looks wrong, say so instead of",
+          'making a speculative change.',
+          '',
+          '## AI analysis',
+          analysis,
+          '',
+          '<details><summary>Raw serial log (last ~4000 chars)</summary>',
+          '',
+          '```',
+          log.length > 4000 ? log.slice(-4000) : log,
+          '```',
+          '</details>'
+        ].join('\n');
+
+        fileIssueBtn.disabled = true;
+        statusEl.textContent = 'Filing issue...';
+
+        fetch('https://api.github.com/repos/' + REPO + '/issues', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            title: 'Auto-debug report — ' + new Date().toLocaleString(),
+            body: body
+          })
+        }).then(function (res) {
+          return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; });
+        }).then(function (result) {
+          if (!result.ok) {
+            var msg = (result.data && result.data.message) || ('HTTP ' + result.status);
+            statusEl.textContent = 'Error: ' + msg;
+            return;
+          }
+          statusEl.innerHTML = 'Filed: <a href="' + result.data.html_url + '" target="_blank">' +
+            result.data.html_url + '</a> — Claude Code should pick it up shortly.';
+        }).catch(function (err) {
+          statusEl.textContent = 'Request failed: ' + err.message;
+        }).finally(function () {
+          fileIssueBtn.disabled = false;
         });
       });
     })();

@@ -1,0 +1,38 @@
+name: Claude debug fix
+
+# Closes the debug loop: the Pages site's AI assistant files a GitHub issue
+# (title/body containing the trigger phrase below) summarizing a serial
+# log + panel-photo diagnosis. This workflow hands that straight to Claude
+# Code, which has real repo access (via the permissions below, not a token
+# sitting in the browser) to read freeink-sdk, fix src/main.cpp, and push —
+# after which the existing build.yml picks up the push, builds, and the
+# Pages site's auto-flash reflashes the board automatically.
+#
+# One-time setup (can't be done from a coding session — needs a repo owner):
+#   1. Install the Claude GitHub App: https://github.com/apps/claude
+#   2. Add one auth secret under Settings -> Secrets and variables -> Actions:
+#      ANTHROPIC_API_KEY (an Anthropic API key), or CLAUDE_CODE_OAUTH_TOKEN
+#      (from `claude setup-token`, for Pro/Max subscribers).
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  claude-response:
+    # issue_comment fires for PR conversations too; this repo files debug
+    # reports as plain issues, so skip anything that's actually a PR thread.
+    if: ${{ !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          trigger_phrase: "@claude"

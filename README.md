@@ -51,7 +51,7 @@ monitor from Chrome over WebSerial.
 ## Flashing and monitoring from the GitHub Pages site (easiest)
 
 Every push builds the firmware and deploys a page to
-**https://shelbeeely.github.io/X4-test/** with five independent tools, all
+**https://shelbeeely.github.io/X4-test/** with six independent tools, all
 over WebSerial, the camera API, or client-side API calls — no drivers or
 command line:
 
@@ -82,6 +82,16 @@ command line:
   timing, ADC readings sitting on a classification boundary, missing
   events, a panel that looks blank/garbled/stuck compared to what the log
   says it should show, etc.
+- **Send to Claude Code** — files that analysis as a GitHub issue tagged
+  `@claude`. A repo workflow
+  ([`.github/workflows/claude-debug-fix.yml`](.github/workflows/claude-debug-fix.yml))
+  runs [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action)
+  against it, which has real repo access (granted to the *workflow*, not
+  the browser) to read freeink-sdk, fix `src/main.cpp`, and push — closing
+  the loop into CI and back into auto-flash on its own. Needs a
+  **fine-grained** GitHub token scoped to just this repo with only
+  *Issues: Read and write* — it can file issues, not push code or read
+  anything private.
 
 On a Chromebook or any Chrome/Edge browser:
 
@@ -102,17 +112,29 @@ On a Chromebook or any Chrome/Edge browser:
 6. Under **4. Ask an AI about the log (and photo)**, save your OpenRouter
    key once, then click **Analyze log with AI** any time you want a read on
    what the console (and panel, if captured) is showing.
+7. Under **5. Send this diagnosis to Claude Code**, save a fine-grained
+   GitHub token once (Issues-only, this repo), then click **File issue for
+   Claude Code** to hand the current analysis to Claude Code for an actual
+   fix — requires the one-time repo setup below first.
 
-With auto-flash on, the practical loop becomes: push a fix here → CI builds
-it → the open tab reflashes the board within about a minute and the monitor
-reconnects on its own → capture a photo and/or click Analyze whenever you
-want a fresh read, and paste anything interesting back into the chat with
-Claude for the next fix.
+With both auto-flash and step 5 set up, the loop is close to fully closed:
+file an issue → Claude Code fixes the firmware and pushes → CI builds →
+the open tab reflashes the board within about a minute and the monitor
+reconnects on its own → capture a photo and/or click Analyze for a fresh
+read → file the next issue if something's still off. Without step 5 set
+up, it's the same loop with you as the relay: paste the analysis into the
+chat with Claude yourself instead of filing an issue.
 
-> **One-time repo setup:** GitHub Pages must be enabled once before the
-> `Deploy to GitHub Pages` step in the workflow will succeed: go to
-> **Settings → Pages → Build and deployment → Source** and select
-> **GitHub Actions**. After that, every push deploys automatically.
+> **One-time repo setup:**
+> - **GitHub Pages** must be enabled before the `Deploy to GitHub Pages`
+>   step in `build.yml` will succeed: **Settings → Pages → Build and
+>   deployment → Source → GitHub Actions**. After that, every push deploys
+>   automatically.
+> - **Claude Code Action** (for step 5 above) needs the
+>   [Claude GitHub App](https://github.com/apps/claude) installed on this
+>   repo, plus an `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` secret
+>   under **Settings → Secrets and variables → Actions**. Until both are
+>   done, filing an issue from the page won't trigger a fix.
 
 If Web Serial or GitHub Pages isn't an option, use the manual download +
 esptool-js/ESPHome Web flow below instead.
